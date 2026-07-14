@@ -1,0 +1,27 @@
+# Dependencies — installed locally by npm, never committed (reproducible from package.json)
+node_modules/
+
+# Environment variables — contains secrets (DB password, API keys). NEVER commit this.
+.env
+.env.local
+.env.*.local
+
+# TypeScript build output — generated on demand, not source
+dist/
+build/
+
+# Drizzle migration files should be committed once we start generating them.
+# They are the history of schema changes and are needed for production deploys.
+# Do NOT add drizzle/ here.
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS metadata files
+.DS_Store
+Thumbs.db
+
+# Editor config (personal preference, not project config)
+.vscode/
+.idea/
