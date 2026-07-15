@@ -284,7 +284,7 @@ router.post('/import-url', async (req, res) => {
 
   // Fallback: strip noise from the page and send the text to Claude.
   $('script, style, nav, footer, header, aside, [aria-hidden="true"]').remove();
-  const pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 8_000);
+  const pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 20_000);
 
   if (pageText.length < 100) {
     res.status(422).json({
