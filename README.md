@@ -1010,3 +1010,25 @@ All routes under `/api` require authentication unless noted. Auth is checked via
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, householdId, householdName. Used to find people to invite or households to request joining. |
+
+### Recipe Book
+
+All recipe-book routes require `requireHousehold` middleware — user must belong to a household. The household's recipe book is resolved automatically (no book ID in the URL).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/recipe-book/categories` | List all categories in the household's recipe book, ordered alphabetically. |
+| POST | `/api/recipe-book/categories` | Create a category. Body: `{ name }`. 409 if name already exists in this book. |
+| PATCH | `/api/recipe-book/categories/:id` | Rename a category. Body: `{ name }`. |
+| DELETE | `/api/recipe-book/categories/:id` | Delete a category. Recipes in it have categoryId SET NULL automatically. |
+| GET | `/api/recipe-book/recipes` | List recipes. Optional query params: `categoryId`, `search` (title). Returns title, description, baseServings, category. |
+| POST | `/api/recipe-book/recipes` | Create a recipe with ingredients. Body: `{ title, description?, baseServings, categoryId?, steps[], ingredients[] }`. Ingredient names are normalised and find-or-created in the global ingredient table. All inserts are atomic. |
+| GET | `/api/recipe-book/recipes/:id` | Full recipe detail: all fields + ingredients (with names) + images. |
+| PATCH | `/api/recipe-book/recipes/:id` | Update a recipe. All fields optional. If `ingredients` is included, existing ingredients are replaced entirely. |
+| DELETE | `/api/recipe-book/recipes/:id` | Delete a recipe (CASCADE removes ingredients + images). |
+
+### Ingredients
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/ingredients/search?name=` | Autocomplete search across the global ingredient table (partial, case-insensitive, min 2 chars, max 20 results). |
