@@ -916,6 +916,8 @@ Up to 5 recipes manually pinned by a user for their public profile. `recipeId` u
 
 **Share history is permanent** — `recipe_share.recipeId` uses SET NULL so the share record outlives the original recipe. Recipients retain their history and reviews regardless of what the author does.
 
+**Email normalisation on every auth operation** — better-auth `hooks.before` normalises the email in the request body before sign-up, sign-in, password reset, and change-email. `databaseHooks.user.create/update.before` applies the same normalisation as a safety net at the DB write level. Rules: trim whitespace → lowercase → strip `+tag` for Gmail, Googlemail, Outlook, Hotmail, Live, MSN, Yahoo → remove dots from the local part for Gmail/Googlemail only (dot stripping is a Gmail-specific behaviour; dots are significant on all other providers). Result: `User+tag@Gmail.com`, `u.s.e.r@gmail.com`, and `user@gmail.com` all resolve to the same stored address.
+
 ---
 
 ## 6. Architecture
@@ -1037,7 +1039,7 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | PUT | `/api/recipe-book/pins` | Replace all pins atomically. Body: `[{ position, recipeId }]`, max 5 entries, positions 1–5, no duplicates. Validates all recipeIds exist in the household's book. |
 | GET | `/api/recipe-book/can-make` | Match all recipes against the current pantry stock. No-quantity ingredients ("a pinch of salt") are never counted against a recipe. Returns `{ ready: [], almost: [], rest: [] }`. `ready` = all measurable ingredients in stock; `almost` = 1–2 missing (with `missingIngredients` list and `matchPct`); `rest` = remaining recipes sorted by `matchPct` descending. |
 | POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent in order to Claude Haiku vision and never stored. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
-| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. First attempts to parse a JSON-LD `Recipe` schema from the page (no AI cost). If not found, strips navigation/noise and sends the page text to Claude Haiku as a fallback. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
+| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. SSRF-protected (private/loopback addresses blocked). First attempts to parse a JSON-LD `Recipe` schema from the page (no AI cost). If not found, strips navigation/noise and sends the page text to Claude Haiku as a fallback. Response body capped at 2 MB (Content-Length check + hard truncation) before parsing. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
 
 ### Ingredients
 
