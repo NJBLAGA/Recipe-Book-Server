@@ -6,6 +6,8 @@ import { recipeBook, recipeCategory, recipe, recipeIngredient, recipeImage } fro
 import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
+import { upload } from '../lib/upload';
+import { uploadImage, deleteImage } from '../lib/cloudinary';
 
 const router = Router();
 router.use(requireAuth);
@@ -71,6 +73,19 @@ const createRecipeSchema = z.object({
 });
 
 const updateRecipeSchema = createRecipeSchema.partial();
+
+const reorderImagesSchema = z.array(
+  z.object({
+    id: z.string().uuid(),
+    sortOrder: z.number().int().min(0),
+  })
+).min(1);
+
+// Extracts Cloudinary public ID from a stored URL so it can be deleted from storage
+function extractPublicId(url: string): string {
+  const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
+  return match?.[1] ?? '';
+}
 
 // ─── Category routes ──────────────────────────────────────────────────────────
 
@@ -393,6 +408,103 @@ router.delete('/recipes/:id', async (req, res) => {
   await db.delete(recipe).where(eq(recipe.id, req.params.id));
 
   res.json({ message: 'Recipe deleted' });
+});
+
+// ─── Recipe image routes ──────────────────────────────────────────────────────
+
+// POST /api/recipe-book/recipes/:id/images
+router.post('/recipes/:id/images', upload.single('image'), async (req, res) => {
+  const recipeId = req.params.id as string;
+  const recipeBookId = req.recipeBookId;
+  const householdId = req.householdId;
+
+  const [existing] = await db
+    .select({ id: recipe.id })
+    .from(recipe)
+    .where(and(eq(recipe.id, recipeId), eq(recipe.recipeBookId, recipeBookId)))
+    .limit(1);
+
+  if (!existing) {
+    res.status(404).json({ error: 'Recipe not found' });
+    return;
+  }
+
+  if (!req.file) {
+    res.status(400).json({ error: 'Image file is required' });
+    return;
+  }
+
+  const url = await uploadImage(req.file.buffer, `recipe-images/${householdId}`);
+
+  const [image] = await db
+    .insert(recipeImage)
+    .values({ recipeId, url, sortOrder: 0 })
+    .returning();
+
+  res.status(201).json(image);
+});
+
+// PATCH /api/recipe-book/recipes/:id/images/order — update sortOrder for a set of images
+router.patch('/recipes/:id/images/order', async (req, res) => {
+  const [existing] = await db
+    .select({ id: recipe.id })
+    .from(recipe)
+    .where(and(eq(recipe.id, req.params.id), eq(recipe.recipeBookId, req.recipeBookId)))
+    .limit(1);
+
+  if (!existing) {
+    res.status(404).json({ error: 'Recipe not found' });
+    return;
+  }
+
+  const parsed = reorderImagesSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0].message });
+    return;
+  }
+
+  await db.transaction(async (tx) => {
+    for (const item of parsed.data) {
+      await tx
+        .update(recipeImage)
+        .set({ sortOrder: item.sortOrder })
+        .where(and(eq(recipeImage.id, item.id), eq(recipeImage.recipeId, req.params.id)));
+    }
+  });
+
+  res.json({ message: 'Order updated' });
+});
+
+// DELETE /api/recipe-book/recipes/:id/images/:imageId
+router.delete('/recipes/:id/images/:imageId', async (req, res) => {
+  const [existing] = await db
+    .select({ id: recipe.id })
+    .from(recipe)
+    .where(and(eq(recipe.id, req.params.id), eq(recipe.recipeBookId, req.recipeBookId)))
+    .limit(1);
+
+  if (!existing) {
+    res.status(404).json({ error: 'Recipe not found' });
+    return;
+  }
+
+  const [image] = await db
+    .select({ id: recipeImage.id, url: recipeImage.url })
+    .from(recipeImage)
+    .where(and(eq(recipeImage.id, req.params.imageId), eq(recipeImage.recipeId, req.params.id)))
+    .limit(1);
+
+  if (!image) {
+    res.status(404).json({ error: 'Image not found' });
+    return;
+  }
+
+  const publicId = extractPublicId(image.url);
+  if (publicId) await deleteImage(publicId);
+
+  await db.delete(recipeImage).where(eq(recipeImage.id, image.id));
+
+  res.json({ message: 'Image deleted' });
 });
 
 export default router;

@@ -1026,6 +1026,9 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | GET | `/api/recipe-book/recipes/:id` | Full recipe detail: all fields + ingredients (with names) + images. |
 | PATCH | `/api/recipe-book/recipes/:id` | Update a recipe. All fields optional. If `ingredients` is included, existing ingredients are replaced entirely. |
 | DELETE | `/api/recipe-book/recipes/:id` | Delete a recipe (CASCADE removes ingredients + images). |
+| POST | `/api/recipe-book/recipes/:id/images` | Upload an image for a recipe. `multipart/form-data`, field name `image`. Max 10MB, images only. Stores in Cloudinary, saves URL to `recipe_image`. |
+| PATCH | `/api/recipe-book/recipes/:id/images/order` | Reorder images. Body: `[{ id, sortOrder }]`. |
+| DELETE | `/api/recipe-book/recipes/:id/images/:imageId` | Delete an image from Cloudinary and the DB. |
 
 ### Ingredients
 
