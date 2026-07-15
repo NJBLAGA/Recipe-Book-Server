@@ -1035,3 +1035,46 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/ingredients/search?name=` | Autocomplete search across the global ingredient table (partial, case-insensitive, min 2 chars, max 20 results). |
+
+### Pantry
+
+All pantry routes require `requireHousehold`. The household's pantry is resolved automatically.
+
+**Fill levels** are restricted to `0 | 25 | 50 | 75 | 100`. **Effective stock** for a pantry item = sum of all its batch fill levels (computed in the response, not stored).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/pantry/categories` | List pantry categories alphabetically. |
+| POST | `/api/pantry/categories` | Create a category. Body: `{ name }`. 409 if name already exists. |
+| PATCH | `/api/pantry/categories/:id` | Rename a category. Body: `{ name }`. |
+| DELETE | `/api/pantry/categories/:id` | Delete a category. Items in it have categoryId SET NULL. |
+| GET | `/api/pantry/items` | List all pantry items with ingredient name, category, batches, and effectiveStock. Optional `?categoryId` filter. Two-query pattern: items then batches, grouped in app. |
+| POST | `/api/pantry/items` | Add an ingredient to the pantry. Body: `{ ingredientName, categoryId?, fillLevel? }` (fillLevel defaults to 100). Creates the item + an initial batch. 409 if ingredient already in pantry. |
+| GET | `/api/pantry/items/:id` | Full item detail: ingredient name, category, batches, effectiveStock, images. |
+| PATCH | `/api/pantry/items/:id` | Update an item's category. Body: `{ categoryId }`. |
+| DELETE | `/api/pantry/items/:id` | Delete a pantry item (CASCADE removes batches + images). |
+| POST | `/api/pantry/items/:id/batches` | Add a new batch to an item. Body: `{ fillLevel }`. |
+| PATCH | `/api/pantry/batches/:id` | Update a batch's fill level. Body: `{ fillLevel }`. Verifies the batch belongs to this household via JOIN. |
+| DELETE | `/api/pantry/batches/:id` | Delete a batch. 400 if it's the last batch — delete the item instead. |
+| POST | `/api/pantry/items/:id/images` | Upload an image for a pantry item. `multipart/form-data`, field `image`. Max 10MB. Stored in Cloudinary under `pantry-images/{householdId}`. |
+| DELETE | `/api/pantry/items/:id/images/:imageId` | Delete a pantry item image from Cloudinary and the DB. |
+
+### Shopping List
+
+All shopping list routes require `requireHousehold`. The household's shopping list is resolved automatically.
+
+Items can originate from three sources (`source` field): `RECIPE` (added from a recipe ingredient), `PANTRY` (added from a pantry item), or `DIRECT` (manually entered). The `ingredientId` field links to the canonical ingredient when the source is recipe or pantry; it is `null` for direct free-text entries.
+
+`quantity` is stored as `numeric` in PostgreSQL and returned as a string — parse it to a number on the frontend.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/shopping-list/categories` | List shopping list categories alphabetically. |
+| POST | `/api/shopping-list/categories` | Create a category. Body: `{ name }`. 409 if name already exists. |
+| PATCH | `/api/shopping-list/categories/:id` | Rename a category. Body: `{ name }`. |
+| DELETE | `/api/shopping-list/categories/:id` | Delete a category. Items in it have categoryId SET NULL. |
+| GET | `/api/shopping-list/items` | List all items with category name. Optional `?categoryId` and `?isChecked=true\|false` filters. Ordered by category name then item name. |
+| POST | `/api/shopping-list/items` | Add an item. Body: `{ name, categoryId?, ingredientId?, quantity?, unit?, source? }`. |
+| PATCH | `/api/shopping-list/items/:id` | Update an item. All fields optional: `name`, `categoryId`, `quantity`, `unit`, `isChecked`. |
+| DELETE | `/api/shopping-list/items/checked` | Clear all checked items from the list. |
+| DELETE | `/api/shopping-list/items/:id` | Delete a single item. |

@@ -22,3 +22,8 @@ export async function uploadImage(buffer: Buffer, folder: string): Promise<strin
 export async function deleteImage(publicId: string): Promise<void> {
   await cloudinary.uploader.destroy(publicId);
 }
+
+export function extractPublicId(url: string): string {
+  const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
+  return match?.[1] ?? '';
+}

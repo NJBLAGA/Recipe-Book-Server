@@ -7,7 +7,8 @@ import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
 import { upload } from '../lib/upload';
-import { uploadImage, deleteImage } from '../lib/cloudinary';
+import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
+import { findOrCreateIngredient } from '../lib/ingredient';
 
 const router = Router();
 router.use(requireAuth);
@@ -24,30 +25,6 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
   req.recipeBookId = book.id;
   next();
 });
-
-// ─── Ingredient helper ────────────────────────────────────────────────────────
-
-// tx is typed as any because PgTransaction and NeonHttpDatabase are structurally different
-// despite sharing all the methods we actually use here
-async function findOrCreateIngredient(tx: any, name: string): Promise<string> {
-  const normalized = name.trim().toLowerCase();
-
-  const [created] = await tx
-    .insert(ingredient)
-    .values({ name: normalized })
-    .onConflictDoNothing()
-    .returning({ id: ingredient.id });
-
-  if (created) return created.id;
-
-  const [existing] = await tx
-    .select({ id: ingredient.id })
-    .from(ingredient)
-    .where(eq(ingredient.name, normalized))
-    .limit(1);
-
-  return existing.id;
-}
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
@@ -80,12 +57,6 @@ const reorderImagesSchema = z.array(
     sortOrder: z.number().int().min(0),
   })
 ).min(1);
-
-// Extracts Cloudinary public ID from a stored URL so it can be deleted from storage
-function extractPublicId(url: string): string {
-  const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
-  return match?.[1] ?? '';
-}
 
 // ─── Category routes ──────────────────────────────────────────────────────────
 

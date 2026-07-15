@@ -25,6 +25,8 @@ declare global {
       };
       householdId: string;
       recipeBookId: string;
+      pantryId: string;
+      shoppingListId: string;
     }
   }
 }
