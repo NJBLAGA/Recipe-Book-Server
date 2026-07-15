@@ -160,6 +160,17 @@ router.post('/:id/invites', async (req, res) => {
     return;
   }
 
+  const [targetUser] = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(user.id, targetUserId))
+    .limit(1);
+
+  if (!targetUser) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
   const targetMembership = await db
     .select({ id: householdUser.id })
     .from(householdUser)

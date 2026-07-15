@@ -58,8 +58,8 @@ router.patch('/me', async (req, res) => {
   }
 
   // Derive updated full name from firstName/lastName when either changes
-  const first = firstName !== undefined ? (firstName ?? req.user.firstName ?? '') : (req.user.firstName ?? '');
-  const last = lastName !== undefined ? (lastName ?? req.user.lastName ?? '') : (req.user.lastName ?? '');
+  const first = firstName !== undefined ? (firstName ?? '') : (req.user.firstName ?? '');
+  const last = lastName !== undefined ? (lastName ?? '') : (req.user.lastName ?? '');
   const derivedName = [first, last].filter(Boolean).join(' ') || req.user.name;
 
   const [updated] = await db
