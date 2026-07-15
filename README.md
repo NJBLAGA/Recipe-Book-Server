@@ -189,6 +189,36 @@ erDiagram
   }
 
   %% ── SHARING, REVIEWS, FOLLOWS, NOTIFICATIONS ──────────────────────
+  recipe_image {
+    uuid id PK
+    uuid recipeId FK
+    text url
+    integer sortOrder
+    timestamp createdAt
+  }
+  recipe_cook {
+    uuid id PK
+    text userId FK
+    uuid recipeId FK "nullable"
+    cook_status status "IN_PROGRESS | COMPLETED | CANCELLED"
+    jsonb pendingChanges "nullable"
+    text note "nullable"
+    timestamp cookedAt
+  }
+  recipe_cook_image {
+    uuid id PK
+    uuid recipeCookId FK
+    text url
+    integer sortOrder
+    timestamp createdAt
+  }
+  pantry_item_image {
+    uuid id PK
+    uuid pantryItemId FK
+    text url
+    integer sortOrder
+    timestamp createdAt
+  }
   recipe_share {
     uuid id PK
     uuid recipeId FK "nullable"
@@ -218,6 +248,12 @@ erDiagram
     notification_type type
     jsonb payload
     timestamp readAt "nullable"
+    timestamp createdAt
+  }
+  user_pinned_recipe {
+    text userId FK
+    uuid recipeId FK "nullable – SET NULL on delete"
+    integer position "1–5"
     timestamp createdAt
   }
 
@@ -259,8 +295,14 @@ erDiagram
   user ||--o{ follow : "followed by"
 
   user ||--o{ notification : "receives"
+  user ||--o{ recipe_cook : "has"
+  user ||--o{ user_pinned_recipe : "pins"
 
   recipe ||--o| recipe : "copied from (self-ref)"
+  recipe ||--o{ recipe_image : "has"
+  recipe ||--o{ recipe_cook : "cooked via"
+  recipe_cook ||--o{ recipe_cook_image : "has"
+  pantry_item ||--o{ pantry_item_image : "has"
 ```
 
 ---
@@ -322,7 +364,12 @@ erDiagram
     text title
     integer baseServings
     jsonb steps
-    text photoUrl "nullable"
+  }
+  recipe_image {
+    uuid id PK
+    uuid recipeId FK
+    text url
+    integer sortOrder
   }
   recipe_ingredient {
     uuid id PK
@@ -341,8 +388,39 @@ erDiagram
   recipe_book ||--o{ recipe_category : "has"
   recipe_book ||--o{ recipe : "contains"
   recipe_category ||--o{ recipe : "organises"
+  recipe ||--o{ recipe_image : "has"
   recipe ||--o{ recipe_ingredient : "has"
   recipe_ingredient }o--|| ingredient : "references"
+```
+
+### Cook Sessions
+
+```mermaid
+erDiagram
+  recipe_cook {
+    uuid id PK
+    text userId FK
+    uuid recipeId FK "nullable – SET NULL on delete"
+    cook_status status "IN_PROGRESS | COMPLETED | CANCELLED"
+    jsonb pendingChanges "nullable"
+    text note "nullable"
+    timestamp cookedAt
+  }
+  recipe_cook_image {
+    uuid id PK
+    uuid recipeCookId FK
+    text url
+    integer sortOrder
+  }
+  user_pinned_recipe {
+    text userId FK
+    uuid recipeId FK "nullable – SET NULL on delete"
+    integer position "1–5"
+  }
+
+  recipe_cook ||--o{ recipe_cook_image : "has"
+  user ||--o{ recipe_cook : "has"
+  user ||--o{ user_pinned_recipe : "pins"
 ```
 
 ### Pantry
@@ -584,6 +662,46 @@ Global — not scoped to any household. Normalised to lowercase before insert.
 
 ---
 
+### `recipe_image`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | uuid | PK |
+| `recipeId` | uuid | FK → recipe (CASCADE) |
+| `url` | text | Cloudinary URL |
+| `sortOrder` | integer | NOT NULL, default 0 |
+| `createdAt` | timestamp | |
+
+---
+
+### `recipe_cook`
+
+Persisted from the moment "Start Cooking" is pressed. `pendingChanges` accumulates pantry updates as the user ticks ingredients — nothing is written to the pantry until the session is completed.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | uuid | PK |
+| `userId` | text | FK → user (CASCADE) |
+| `recipeId` | uuid | FK → recipe; nullable (SET NULL on delete) |
+| `status` | enum | `IN_PROGRESS \| COMPLETED \| CANCELLED` |
+| `pendingChanges` | jsonb | `{ ticked, pantryChanges, extraChanges }` — nullable |
+| `note` | text | nullable — user note added after completion |
+| `cookedAt` | timestamp | |
+
+---
+
+### `recipe_cook_image`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | uuid | PK |
+| `recipeCookId` | uuid | FK → recipe_cook (CASCADE) |
+| `url` | text | Cloudinary URL |
+| `sortOrder` | integer | NOT NULL, default 0 |
+| `createdAt` | timestamp | |
+
+---
+
 ### `pantry`
 
 | Column | Type | Constraints |
@@ -629,6 +747,18 @@ Effective stock per item = `SUM(fillLevel)` across all its batches.
 | `fillLevel` | smallint | CHECK IN (0, 25, 50, 75, 100) |
 | `createdAt` | timestamp | |
 | `updatedAt` | timestamp | |
+
+---
+
+### `pantry_item_image`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | uuid | PK |
+| `pantryItemId` | uuid | FK → pantry_item (CASCADE) |
+| `url` | text | Cloudinary URL |
+| `sortOrder` | integer | NOT NULL, default 0 |
+| `createdAt` | timestamp | |
 
 ---
 
@@ -728,6 +858,19 @@ Constraint: `CHECK (followerId <> followingId)`
 
 ---
 
+### `user_pinned_recipe`
+
+Up to 5 recipes manually pinned by a user for their public profile. `recipeId` uses SET NULL so a pin slot survives recipe deletion (frontend shows "recipe no longer available").
+
+| Column | Type | Constraints |
+|---|---|---|
+| `userId` | text | FK → user (CASCADE); composite PK with position |
+| `recipeId` | uuid | FK → recipe; nullable (SET NULL); UNIQUE(userId, recipeId) |
+| `position` | integer | CHECK 1–5; composite PK with userId |
+| `createdAt` | timestamp | |
+
+---
+
 ## 4. Enums
 
 | Enum | Values |
@@ -738,6 +881,7 @@ Constraint: `CHECK (followerId <> followingId)`
 | `share_status` | `PENDING`, `ACCEPTED`, `REJECTED` |
 | `item_source` | `RECIPE`, `PANTRY`, `DIRECT` |
 | `notification_type` | `RECIPE_SHARED`, `HOUSEHOLD_INVITE`, `JOIN_REQUEST` |
+| `cook_status` | `IN_PROGRESS`, `COMPLETED`, `CANCELLED` |
 
 ---
 
@@ -793,10 +937,69 @@ Every app resource carries a path back to `household_id`. The auth check is alwa
 
 ## 7. Setup
 
-*Filled in once project scaffolding is complete.*
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Create .env from the example and fill in all values
+cp .env.example .env
+
+# 3. Run migrations against Neon
+npm run db:migrate
+
+# 4. Start the dev server
+npm run dev
+```
+
+### Required environment variables
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Neon PostgreSQL connection string |
+| `CLIENT_URL` | Frontend origin for CORS (e.g. `http://localhost:5173`) |
+| `PORT` | Server port (default `3000`) |
+| `BETTER_AUTH_SECRET` | Random secret for better-auth (generate with `openssl rand -base64 32`) |
+| `BETTER_AUTH_URL` | Backend base URL (e.g. `http://localhost:3000`) |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name |
+| `CLOUDINARY_API_KEY` | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret |
+| `ANTHROPIC_API_KEY` | Anthropic API key (for recipe scan feature) |
+| `RESEND_API_KEY` | Resend API key (for transactional email) |
+| `RESEND_FROM_EMAIL` | From address for emails (requires verified Resend domain; falls back to `onboarding@resend.dev`) |
 
 ---
 
 ## 8. API Routes
 
-*Filled in as routes are built.*
+All routes under `/api` require authentication unless noted. Auth is checked via the `requireAuth` middleware which validates the session cookie set by better-auth.
+
+### Auth — handled by better-auth at `/api/auth/*`
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/auth/sign-up/email` | Register with email + password |
+| POST | `/api/auth/sign-in/email` | Sign in with email + password |
+| POST | `/api/auth/sign-out` | Sign out |
+| GET | `/api/auth/get-session` | Get current session + user |
+| POST | `/api/auth/verify-email` | Verify email address |
+| POST | `/api/auth/forget-password` | Request password reset email |
+| POST | `/api/auth/reset-password` | Reset password with token |
+| GET | `/api/auth/sign-in/social?provider=google` | Initiate Google OAuth |
+| GET | `/api/auth/callback/google` | Google OAuth callback |
+
+### Households
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/households` | ✓ | Create a household (caller becomes OWNER). Creates household + householdUser + recipeBook + pantry + shoppingList in one transaction. |
+| GET | `/api/households/mine` | ✓ | Get current user's household and their role. 404 if they have none. |
+| GET | `/api/households/pending` | ✓ | Pending invites directed at this user + pending join requests to their household (if they have one). |
+| POST | `/api/households/:id/invites` | ✓ member | Send an invite to a user by userId. Target must have no household. |
+| POST | `/api/households/:id/requests` | ✓ no-household | Request to join a household. |
+| POST | `/api/households/join-requests/:id/accept` | ✓ | Accept an invite (invited user only) or join request (any household member). Adds user to household + auto-cancels all their other pending invites/requests. |
+| POST | `/api/households/join-requests/:id/decline` | ✓ | Decline an invite (invited user only) or join request (any household member). |
+| POST | `/api/households/join-requests/:id/cancel` | ✓ | Cancel a pending invite or request. Only the sender (`initiatedByUserId`) can cancel. |
+| POST | `/api/households/:id/transfer-ownership` | ✓ owner | Atomically promote another member to OWNER and demote self to USER. |
+| POST | `/api/households/:id/leave` | ✓ member | Leave the household. Owner must transfer first if other members exist; if last member, household is deleted (CASCADE removes everything). |
