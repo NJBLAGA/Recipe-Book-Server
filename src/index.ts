@@ -6,6 +6,7 @@ import { rateLimit } from 'express-rate-limit';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import routes from './routes';
+import { restoreTimers } from './lib/timer-scheduler';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -44,4 +45,5 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  restoreTimers().catch(console.error);
 });

@@ -1078,3 +1078,24 @@ Items can originate from three sources (`source` field): `RECIPE` (added from a 
 | PATCH | `/api/shopping-list/items/:id` | Update an item. All fields optional: `name`, `categoryId`, `quantity`, `unit`, `isChecked`. |
 | DELETE | `/api/shopping-list/items/checked` | Clear all checked items from the list. |
 | DELETE | `/api/shopping-list/items/:id` | Delete a single item. |
+
+### Cook Sessions
+
+Cook sessions are user-scoped (not household-scoped). The user must belong to a household whose recipe book contains the recipe.
+
+**Flow:** Start → tick ingredients mid-cook (each tick saves a pending pantry change to `pendingChanges` JSONB — nothing is written to the pantry yet) → Submit opens a summary screen showing all queued changes → Confirm calls `complete`, which atomically applies all pantry updates and returns which items are now low → a follow-up prompt lets the user choose which low items to add to the shopping list via the existing `POST /api/shopping-list/items` route.
+
+`pendingChanges` shape: `{ ticked: string[], pantryChanges: [{ batchId, newFillLevel }], extraChanges: [{ batchId, newFillLevel }] }`
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/cook-sessions` | Cook history for the current user (COMPLETED only, CANCELLED filtered out). Optional `?recipeId` filter. Used for "last cooked" on recipe cards and user profile history. |
+| GET | `/api/cook-sessions/active` | Get the current user's IN_PROGRESS session, if any. Optional `?recipeId` filter. Returns `null` if none. Used to show "Resume Cooking" instead of "Start Cooking". |
+| POST | `/api/cook-sessions` | Start or resume a cook session. Body: `{ recipeId }`. If an IN_PROGRESS session already exists for this user + recipe, returns it with `resumed: true`. Otherwise creates a new one. |
+| GET | `/api/cook-sessions/:id` | Get a specific session including its photos. |
+| PATCH | `/api/cook-sessions/:id/pending-changes` | Save the current ticked/pending state mid-cook. Body: `{ pendingChanges }`. Replaces the full JSONB. Validates fill levels (must be 0/25/50/75/100). |
+| POST | `/api/cook-sessions/:id/complete` | Confirm completion. Atomically applies all pantry batch updates from `pendingChanges` and marks the session COMPLETED. Returns `{ session, lowStockItems: [{ ingredientId, name, effectiveStock }] }` — the frontend uses `lowStockItems` to prompt the user to add low/empty items to the shopping list. |
+| POST | `/api/cook-sessions/:id/cancel` | Cancel a session. Sets status to CANCELLED, clears `pendingChanges`. Record is kept for history but never shown in cook history lists. |
+| PATCH | `/api/cook-sessions/:id/note` | Add or update a note on a COMPLETED session. Body: `{ note }` (nullable). |
+| POST | `/api/cook-sessions/:id/images` | Upload a photo of the cook attempt. `multipart/form-data`, field `image`. Stored in Cloudinary under `cook-images/{userId}`. Only allowed on COMPLETED sessions. |
+| DELETE | `/api/cook-sessions/:id/images/:imageId` | Delete a cook session photo. |

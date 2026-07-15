@@ -15,6 +15,13 @@
       "when": 1784079037818,
       "tag": "0001_bouncy_red_wolf",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784089968688,
+      "tag": "0002_faithful_loa",
+      "breakpoints": true
     }
   ]
 }
