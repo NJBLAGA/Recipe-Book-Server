@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { lookup as dnsLookup } from 'dns/promises';
 import { and, asc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { load } from 'cheerio';
@@ -226,6 +227,23 @@ router.post('/import-url', async (req, res) => {
   if (isPrivateHost) {
     res.status(400).json({ error: 'A valid URL is required' });
     return;
+  }
+
+  // DNS pre-check: resolve the hostname and verify the IP is not private.
+  // Catches hostnames that look public but are configured to resolve internally
+  // (e.g. internal.company.com → 10.0.0.5). Not a complete DNS-rebinding fix
+  // but eliminates the most common SSRF vectors.
+  try {
+    const { address } = await dnsLookup(hostname);
+    const isResolvedPrivate =
+      ['127.0.0.1', '0.0.0.0', '::1', '169.254.169.254'].includes(address) ||
+      /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address);
+    if (isResolvedPrivate) {
+      res.status(400).json({ error: 'A valid URL is required' });
+      return;
+    }
+  } catch {
+    // DNS resolution failed — let the fetch attempt handle it naturally
   }
 
   if (!urlStringIsClean(parsed.data.url)) {
