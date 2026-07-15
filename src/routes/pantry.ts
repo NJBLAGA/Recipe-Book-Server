@@ -167,28 +167,36 @@ router.post('/items', async (req, res) => {
     if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
   }
 
-  const ingredientId = await findOrCreateIngredient(db, parsed.data.ingredientName);
+  let result: Record<string, unknown> | null = null;
+  try {
+    result = await db.transaction(async (tx) => {
+      const ingredientId = await findOrCreateIngredient(tx, parsed.data.ingredientName);
 
-  const [existingItem] = await db
-    .select({ id: pantryItem.id })
-    .from(pantryItem)
-    .where(and(eq(pantryItem.pantryId, req.pantryId), eq(pantryItem.ingredientId, ingredientId)))
-    .limit(1);
-  if (existingItem) { res.status(409).json({ error: 'This ingredient is already in your pantry' }); return; }
+      const [existingItem] = await tx
+        .select({ id: pantryItem.id })
+        .from(pantryItem)
+        .where(and(eq(pantryItem.pantryId, req.pantryId), eq(pantryItem.ingredientId, ingredientId)))
+        .limit(1);
+      if (existingItem) return null;
 
-  const result = await db.transaction(async (tx) => {
-    const [item] = await tx
-      .insert(pantryItem)
-      .values({ pantryId: req.pantryId, ingredientId, categoryId: parsed.data.categoryId ?? null })
-      .returning();
+      const [item] = await tx
+        .insert(pantryItem)
+        .values({ pantryId: req.pantryId, ingredientId, categoryId: parsed.data.categoryId ?? null })
+        .returning();
 
-    const [batch] = await tx
-      .insert(pantryBatch)
-      .values({ pantryItemId: item.id, fillLevel: parsed.data.fillLevel })
-      .returning();
+      const [batch] = await tx
+        .insert(pantryBatch)
+        .values({ pantryItemId: item.id, fillLevel: parsed.data.fillLevel })
+        .returning();
 
-    return { ...item, batches: [batch], effectiveStock: batch.fillLevel };
-  });
+      return { ...item, batches: [batch], effectiveStock: batch.fillLevel };
+    });
+  } catch (e: any) {
+    if (e?.code === '23505') { res.status(409).json({ error: 'This ingredient is already in your pantry' }); return; }
+    throw e;
+  }
+
+  if (!result) { res.status(409).json({ error: 'This ingredient is already in your pantry' }); return; }
 
   res.status(201).json(result);
 });
