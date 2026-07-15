@@ -200,6 +200,21 @@ router.post('/import-url', async (req, res) => {
     return;
   }
 
+  // Block private/loopback/link-local addresses to prevent SSRF
+  const targetUrl = new URL(parsed.data.url);
+  if (!['http:', 'https:'].includes(targetUrl.protocol)) {
+    res.status(400).json({ error: 'Only http and https URLs are supported' });
+    return;
+  }
+  const hostname = targetUrl.hostname.toLowerCase();
+  const isPrivateHost =
+    ['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254'].includes(hostname) ||
+    /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname);
+  if (isPrivateHost) {
+    res.status(400).json({ error: 'A valid URL is required' });
+    return;
+  }
+
   let html: string;
   try {
     const response = await fetch(parsed.data.url, {
