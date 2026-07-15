@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { and, asc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { load } from 'cheerio';
+import { rateLimit } from 'express-rate-limit';
 import { db } from '../db';
 import { recipeBook, recipeCategory, recipe, recipeIngredient, recipeImage } from '../schema/recipe';
 import { ingredient } from '../schema/ingredient';
@@ -11,6 +13,12 @@ import { requireHousehold } from '../middleware/requireHousehold';
 import { upload } from '../lib/upload';
 import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
 import { findOrCreateIngredient } from '../lib/ingredient';
+import {
+  extractRecipeFromImages,
+  extractRecipeFromText,
+  ExtractedIngredient,
+  ExtractedRecipe,
+} from '../lib/anthropic';
 
 const router = Router();
 router.use(requireAuth);
@@ -27,6 +35,106 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
   req.recipeBookId = book.id;
   next();
 });
+
+// Stricter rate limiter for the scan endpoint — keyed by user ID so it follows
+// the account even if the IP changes. 5 scans per 10 minutes per user.
+const scanLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  keyGenerator: (req) => (req as Request).user?.id ?? req.ip ?? 'unknown',
+  message: { error: 'Too many scan requests — please wait a few minutes before trying again' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ─── JSON-LD helpers (URL import) ────────────────────────────────────────────
+
+const UNIT_PATTERN =
+  /^(teaspoons?|tablespoons?|cups?|ounces?|pounds?|grams?|kilograms?|millilitres?|milliliters?|litres?|liters?|tsp\.?|tbsp\.?|oz\.?|lbs?\.?|g|kg|ml|l|fl\.?\s*oz\.?)$/i;
+
+const FRACTION_MAP: Record<string, number> = {
+  '½': 0.5, '¼': 0.25, '¾': 0.75,
+  '⅓': 0.3333, '⅔': 0.6667,
+  '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875,
+};
+
+function parseQuantityStr(raw: string): number | null {
+  let s = raw.trim();
+  for (const [ch, val] of Object.entries(FRACTION_MAP)) {
+    s = s.replace(ch, ` ${val}`);
+  }
+  let total = 0;
+  for (const part of s.trim().split(/\s+/)) {
+    if (!part) continue;
+    if (part.includes('/')) {
+      const [n, d] = part.split('/').map(Number);
+      if (!isNaN(n) && !isNaN(d) && d !== 0) total += n / d;
+    } else {
+      const n = parseFloat(part);
+      if (!isNaN(n)) total += n;
+    }
+  }
+  return total > 0 ? total : null;
+}
+
+function parseIngredientString(raw: string): ExtractedIngredient {
+  const s = raw.trim();
+  const match = s.match(/^([\d\s\/\.½¼¾⅓⅔⅛⅜⅝⅞-]+)\s+(\S+)\s+([\s\S]+)$/);
+  if (match) {
+    const q = parseQuantityStr(match[1]);
+    if (q !== null) {
+      const possibleUnit = match[2];
+      const rest = match[3].trim();
+      if (UNIT_PATTERN.test(possibleUnit)) {
+        return { name: rest, quantity: q, unit: possibleUnit, note: null };
+      }
+      // No unit (e.g. "3 large eggs") — absorb the word into the name
+      return { name: `${possibleUnit} ${rest}`, quantity: q, unit: null, note: null };
+    }
+  }
+  return { name: s, quantity: null, unit: null, note: s };
+}
+
+function mapJsonLdToRecipe(schema: Record<string, unknown>): ExtractedRecipe {
+  const ingredients = (schema.recipeIngredient as string[] ?? []).map(parseIngredientString);
+
+  let steps: string[] = [];
+  const raw = schema.recipeInstructions;
+  if (Array.isArray(raw)) {
+    steps = raw
+      .map((step: unknown) => {
+        if (typeof step === 'string') return step;
+        if (step && typeof step === 'object') {
+          const s = step as Record<string, unknown>;
+          return typeof s.text === 'string' ? s.text : typeof s.name === 'string' ? s.name : '';
+        }
+        return '';
+      })
+      .filter(Boolean);
+  } else if (typeof raw === 'string') {
+    steps = [raw];
+  }
+
+  const yieldRaw = schema.recipeYield;
+  let baseServings = 4;
+  if (typeof yieldRaw === 'number') {
+    baseServings = yieldRaw;
+  } else if (typeof yieldRaw === 'string') {
+    const n = parseInt(yieldRaw);
+    if (!isNaN(n)) baseServings = n;
+  } else if (Array.isArray(yieldRaw) && yieldRaw.length > 0) {
+    const n = parseInt(String(yieldRaw[0]));
+    if (!isNaN(n)) baseServings = n;
+  }
+
+  return {
+    title: typeof schema.name === 'string' ? schema.name : 'Untitled Recipe',
+    description: typeof schema.description === 'string' ? schema.description : null,
+    baseServings,
+    steps,
+    ingredients,
+  };
+}
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
@@ -59,6 +167,101 @@ const reorderImagesSchema = z.array(
     sortOrder: z.number().int().min(0),
   })
 ).min(1);
+
+// ─── Scan route ───────────────────────────────────────────────────────────────
+
+// POST /api/recipe-book/scan
+// Accepts 1–10 ordered images, extracts a recipe via Claude vision, returns the
+// pre-filled recipe shape for the frontend review form. Images are never stored.
+router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) => {
+  const files = req.files as Express.Multer.File[] | undefined;
+
+  if (!files || files.length === 0) {
+    res.status(400).json({ error: 'At least one image is required' });
+    return;
+  }
+
+  const extracted = await extractRecipeFromImages(
+    files.map((f) => ({ buffer: f.buffer, mimetype: f.mimetype }))
+  );
+
+  res.json(extracted);
+});
+
+// ─── URL import route ─────────────────────────────────────────────────────────
+
+// POST /api/recipe-book/import-url
+// 1. Fetches the page and looks for a JSON-LD Recipe schema (free, no AI cost).
+// 2. If not found, strips noise and sends the page text to Claude as a fallback.
+router.post('/import-url', async (req, res) => {
+  const parsed = z.object({ url: z.string().url('A valid URL is required') }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0].message });
+    return;
+  }
+
+  let html: string;
+  try {
+    const response = await fetch(parsed.data.url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeImporter/1.0)' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    html = await response.text();
+  } catch {
+    res.status(422).json({
+      error: 'Could not fetch that URL — the site may be blocking automated access. Try uploading a screenshot instead.',
+    });
+    return;
+  }
+
+  const $ = load(html);
+
+  // Try JSON-LD structured data first — most recipe sites embed this and it
+  // maps directly with no AI cost.
+  let extracted: ExtractedRecipe | null = null;
+
+  $('script[type="application/ld+json"]').each((_i, el) => {
+    if (extracted) return;
+    try {
+      const data = JSON.parse($(el).html() ?? '');
+      const schemas: unknown[] = Array.isArray(data) ? data : [data];
+      const recipeSchema = schemas.find((s): s is Record<string, unknown> => {
+        if (!s || typeof s !== 'object') return false;
+        const t = (s as Record<string, unknown>)['@type'];
+        return t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'));
+      });
+      if (recipeSchema) extracted = mapJsonLdToRecipe(recipeSchema);
+    } catch {
+      // Malformed JSON-LD — skip this block
+    }
+  });
+
+  if (extracted) {
+    res.json(extracted);
+    return;
+  }
+
+  // Fallback: strip noise from the page and send the text to Claude.
+  $('script, style, nav, footer, header, aside, [aria-hidden="true"]').remove();
+  const pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 8_000);
+
+  if (pageText.length < 100) {
+    res.status(422).json({
+      error: 'Could not read recipe content from that page — try uploading a screenshot instead.',
+    });
+    return;
+  }
+
+  try {
+    extracted = await extractRecipeFromText(pageText);
+    res.json(extracted);
+  } catch {
+    res.status(422).json({
+      error: 'Could not extract a recipe from that page — try uploading a screenshot instead.',
+    });
+  }
+});
 
 // ─── Category routes ──────────────────────────────────────────────────────────
 
