@@ -44,7 +44,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
 const scanLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
-  keyGenerator: (req) => (req as Request).user?.id ?? req.ip ?? 'unknown',
+  keyGenerator: (req) => (req as Request).user?.id ?? 'unknown',
   message: { error: 'Too many scan requests — please wait a few minutes before trying again' },
   standardHeaders: true,
   legacyHeaders: false,
