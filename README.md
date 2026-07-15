@@ -1003,3 +1003,10 @@ All routes under `/api` require authentication unless noted. Auth is checked via
 | POST | `/api/households/join-requests/:id/cancel` | ✓ | Cancel a pending invite or request. Only the sender (`initiatedByUserId`) can cancel. |
 | POST | `/api/households/:id/transfer-ownership` | ✓ owner | Atomically promote another member to OWNER and demote self to USER. |
 | POST | `/api/households/:id/leave` | ✓ member | Leave the household. Owner must transfer first if other members exist; if last member, household is deleted (CASCADE removes everything). |
+| GET | `/api/households/:id/members` | ✓ member | List all members of a household with name, handle, image, role, joinedAt. |
+
+### Users
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, householdId, householdName. Used to find people to invite or households to request joining. |

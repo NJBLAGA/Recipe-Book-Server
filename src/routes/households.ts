@@ -7,6 +7,7 @@ import { recipeBook } from '../schema/recipe';
 import { pantry } from '../schema/pantry';
 import { shoppingList } from '../schema/shopping';
 import { notification } from '../schema/social';
+import { user } from '../schema/auth';
 import { requireAuth } from '../middleware/requireAuth';
 
 const router = Router();
@@ -486,6 +487,42 @@ router.post('/join-requests/:id/cancel', async (req, res) => {
     .where(eq(householdJoinRequest.id, joinRequest.id));
 
   res.json({ message: 'Cancelled' });
+});
+
+// GET /api/households/:id/members — list members with user details (must be a member)
+router.get('/:id/members', async (req, res) => {
+  const { id: householdId } = req.params;
+
+  const membership = await db
+    .select({ id: householdUser.id })
+    .from(householdUser)
+    .where(
+      and(
+        eq(householdUser.householdId, householdId),
+        eq(householdUser.userId, req.user.id)
+      )
+    )
+    .limit(1);
+
+  if (membership.length === 0) {
+    res.status(403).json({ error: 'You are not a member of this household' });
+    return;
+  }
+
+  const members = await db
+    .select({
+      userId: user.id,
+      name: user.name,
+      handle: user.handle,
+      image: user.image,
+      role: householdUser.role,
+      joinedAt: householdUser.joinedAt,
+    })
+    .from(householdUser)
+    .innerJoin(user, eq(householdUser.userId, user.id))
+    .where(eq(householdUser.householdId, householdId));
+
+  res.json(members);
 });
 
 // POST /api/households/:id/transfer-ownership — owner promotes another member to owner
