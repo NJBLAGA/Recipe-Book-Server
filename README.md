@@ -1036,6 +1036,8 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | GET | `/api/recipe-book/pins` | Get the current user's pinned recipes (up to 5). Returns `[{ position, recipeId, recipeTitle, recipeDescription }]` ordered by position. `recipeId` and `recipeTitle` are null if the recipe was deleted. |
 | PUT | `/api/recipe-book/pins` | Replace all pins atomically. Body: `[{ position, recipeId }]`, max 5 entries, positions 1–5, no duplicates. Validates all recipeIds exist in the household's book. |
 | GET | `/api/recipe-book/can-make` | Match all recipes against the current pantry stock. No-quantity ingredients ("a pinch of salt") are never counted against a recipe. Returns `{ ready: [], almost: [], rest: [] }`. `ready` = all measurable ingredients in stock; `almost` = 1–2 missing (with `missingIngredients` list and `matchPct`); `rest` = remaining recipes sorted by `matchPct` descending. |
+| POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent in order to Claude Haiku vision and never stored. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
+| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. First attempts to parse a JSON-LD `Recipe` schema from the page (no AI cost). If not found, strips navigation/noise and sends the page text to Claude Haiku as a fallback. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
 
 ### Ingredients
 
