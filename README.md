@@ -918,6 +918,18 @@ Up to 5 recipes manually pinned by a user for their public profile. `recipeId` u
 
 **Email normalisation on every auth operation** — better-auth `hooks.before` normalises the email in the request body before sign-up, sign-in, password reset, and change-email. `databaseHooks.user.create/update.before` applies the same normalisation as a safety net at the DB write level. Rules: trim whitespace → lowercase → strip `+tag` for Gmail, Googlemail, Outlook, Hotmail, Live, MSN, Yahoo → remove dots from the local part for Gmail/Googlemail only (dot stripping is a Gmail-specific behaviour; dots are significant on all other providers). Result: `User+tag@Gmail.com`, `u.s.e.r@gmail.com`, and `user@gmail.com` all resolve to the same stored address.
 
+**Category ownership verified before write** — `categoryId` on `pantry_item`, `shopping_list_item`, and `recipe` accepts any FK-valid UUID. Without an explicit ownership check the column would silently accept a category from another household's pantry/list/book, leaking its name back in the JOIN response. All create and update routes now verify that `categoryId` (when non-null) belongs to the current household's pantry, shopping list, or recipe book before inserting or updating.
+
+**`ingredientId` existence check on shopping list item creation** — `shopping_list_item.ingredientId` references `ingredient.id` with no ON DELETE action (defaults to NO ACTION). Inserting a non-existent UUID raises a Postgres FK violation → unhandled 500. The POST handler now verifies the ingredient exists before inserting and returns a clean 400.
+
+**Recipe title uniqueness — not enforced** — No `UNIQUE(recipeBookId, title)` constraint. Households legitimately want variations of the same recipe (e.g. "Bolognese" and "Bolognese — Low Fat"). Recipe names are free-form; uniqueness is a user convention, not a system rule.
+
+**Content moderation on all recipe input paths** — `src/lib/moderation.ts` exposes three functions used across the recipe routes:
+- `urlStringIsClean(url)` — called at `POST /import-url` after the SSRF check; decodes percent-encoding before testing so `%66uck`-style bypasses are caught.
+- `recipeIsClean(extracted)` — called after every extraction (scan and URL import) before returning to the frontend; checks title, description, all ingredient names, all ingredient notes, and all steps.
+- `textIsClean(title)` — called at `POST /recipes` and `PATCH /recipes/:id` as the final gate before any recipe is saved; checks the title field only (ingredient/step content is too likely to overlap with legitimate food vocabulary for aggressive save-time filtering).
+All three paths (manual entry, image scan, URL import) converge on the save endpoint, so the save-time title check covers manual input. The extraction checks provide an earlier gate for AI-derived content from external sources.
+
 ---
 
 ## 6. Architecture
@@ -1038,8 +1050,8 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | GET | `/api/recipe-book/pins` | Get the current user's pinned recipes (up to 5). Returns `[{ position, recipeId, recipeTitle, recipeDescription }]` ordered by position. `recipeId` and `recipeTitle` are null if the recipe was deleted. |
 | PUT | `/api/recipe-book/pins` | Replace all pins atomically. Body: `[{ position, recipeId }]`, max 5 entries, positions 1–5, no duplicates. Validates all recipeIds exist in the household's book. |
 | GET | `/api/recipe-book/can-make` | Match all recipes against the current pantry stock. No-quantity ingredients ("a pinch of salt") are never counted against a recipe. Returns `{ ready: [], almost: [], rest: [] }`. `ready` = all measurable ingredients in stock; `almost` = 1–2 missing (with `missingIngredients` list and `matchPct`); `rest` = remaining recipes sorted by `matchPct` descending. |
-| POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent in order to Claude Haiku vision and never stored. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
-| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. SSRF-protected (private/loopback addresses blocked). First attempts to parse a JSON-LD `Recipe` schema from the page (no AI cost). If not found, strips navigation/noise and sends the page text to Claude Haiku as a fallback. Response body capped at 2 MB (Content-Length check + hard truncation) before parsing. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
+| POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent in order to Claude Haiku vision and never stored. Extracted content is checked for inappropriate material before returning. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
+| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. SSRF-protected (private/loopback addresses blocked). URL string checked for inappropriate content before fetching (percent-encoding decoded first). Fetches with 10-second timeout. First attempts to parse a JSON-LD `Recipe` schema from the page (no AI cost). If not found, strips navigation/noise and sends the page text to Claude Haiku as a fallback. Response body capped at 2 MB (Content-Length check + hard truncation). Extracted content checked for inappropriate material before returning. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
 
 ### Ingredients
 

@@ -157,6 +157,15 @@ router.post('/items', async (req, res) => {
   const parsed = createItemSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
+  if (parsed.data.categoryId) {
+    const [cat] = await db
+      .select({ id: pantryCategory.id })
+      .from(pantryCategory)
+      .where(and(eq(pantryCategory.id, parsed.data.categoryId), eq(pantryCategory.pantryId, req.pantryId)))
+      .limit(1);
+    if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
+  }
+
   const ingredientId = await findOrCreateIngredient(db, parsed.data.ingredientName);
 
   const [existingItem] = await db
@@ -229,6 +238,15 @@ router.patch('/items/:id', async (req, res) => {
     .where(and(eq(pantryItem.id, req.params.id), eq(pantryItem.pantryId, req.pantryId)))
     .limit(1);
   if (!existing) { res.status(404).json({ error: 'Item not found' }); return; }
+
+  if (parsed.data.categoryId) {
+    const [cat] = await db
+      .select({ id: pantryCategory.id })
+      .from(pantryCategory)
+      .where(and(eq(pantryCategory.id, parsed.data.categoryId), eq(pantryCategory.pantryId, req.pantryId)))
+      .limit(1);
+    if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
+  }
 
   const [updated] = await db
     .update(pantryItem)

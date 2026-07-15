@@ -3,6 +3,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { shoppingList, shoppingListCategory, shoppingListItem } from '../schema/shopping';
+import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
 
@@ -162,6 +163,24 @@ router.post('/items', async (req, res) => {
   const parsed = createItemSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
+  if (parsed.data.categoryId) {
+    const [cat] = await db
+      .select({ id: shoppingListCategory.id })
+      .from(shoppingListCategory)
+      .where(and(eq(shoppingListCategory.id, parsed.data.categoryId), eq(shoppingListCategory.shoppingListId, req.shoppingListId)))
+      .limit(1);
+    if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
+  }
+
+  if (parsed.data.ingredientId) {
+    const [ing] = await db
+      .select({ id: ingredient.id })
+      .from(ingredient)
+      .where(eq(ingredient.id, parsed.data.ingredientId))
+      .limit(1);
+    if (!ing) { res.status(400).json({ error: 'Invalid ingredient' }); return; }
+  }
+
   const [item] = await db
     .insert(shoppingListItem)
     .values({
@@ -192,6 +211,15 @@ router.patch('/items/:id', async (req, res) => {
   if (!existing) { res.status(404).json({ error: 'Item not found' }); return; }
 
   const { name, categoryId, quantity, unit, isChecked } = parsed.data;
+
+  if (categoryId) {
+    const [cat] = await db
+      .select({ id: shoppingListCategory.id })
+      .from(shoppingListCategory)
+      .where(and(eq(shoppingListCategory.id, categoryId), eq(shoppingListCategory.shoppingListId, req.shoppingListId)))
+      .limit(1);
+    if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
+  }
 
   const [updated] = await db
     .update(shoppingListItem)

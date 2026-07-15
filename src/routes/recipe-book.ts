@@ -19,6 +19,7 @@ import {
   ExtractedIngredient,
   ExtractedRecipe,
 } from '../lib/anthropic';
+import { textIsClean, urlStringIsClean, recipeIsClean } from '../lib/moderation';
 
 const router = Router();
 router.use(requireAuth);
@@ -185,6 +186,11 @@ router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) =
     files.map((f) => ({ buffer: f.buffer, mimetype: f.mimetype }))
   );
 
+  if (!recipeIsClean(extracted)) {
+    res.status(422).json({ error: 'Extracted recipe contains inappropriate content' });
+    return;
+  }
+
   res.json(extracted);
 });
 
@@ -212,6 +218,11 @@ router.post('/import-url', async (req, res) => {
     /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname);
   if (isPrivateHost) {
     res.status(400).json({ error: 'A valid URL is required' });
+    return;
+  }
+
+  if (!urlStringIsClean(parsed.data.url)) {
+    res.status(422).json({ error: 'URL contains inappropriate content' });
     return;
   }
 
@@ -263,6 +274,10 @@ router.post('/import-url', async (req, res) => {
   });
 
   if (extracted) {
+    if (!recipeIsClean(extracted)) {
+      res.status(422).json({ error: 'Extracted recipe contains inappropriate content' });
+      return;
+    }
     res.json(extracted);
     return;
   }
@@ -280,6 +295,10 @@ router.post('/import-url', async (req, res) => {
 
   try {
     extracted = await extractRecipeFromText(pageText);
+    if (!recipeIsClean(extracted)) {
+      res.status(422).json({ error: 'Extracted recipe contains inappropriate content' });
+      return;
+    }
     res.json(extracted);
   } catch {
     res.status(422).json({
@@ -590,6 +609,20 @@ router.post('/recipes', async (req, res) => {
 
   const { title, description, baseServings, categoryId, steps, ingredients } = parsed.data;
 
+  if (!textIsClean(title)) {
+    res.status(400).json({ error: 'Recipe title contains inappropriate content' });
+    return;
+  }
+
+  if (categoryId) {
+    const [cat] = await db
+      .select({ id: recipeCategory.id })
+      .from(recipeCategory)
+      .where(and(eq(recipeCategory.id, categoryId), eq(recipeCategory.recipeBookId, req.recipeBookId)))
+      .limit(1);
+    if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
+  }
+
   const result = await db.transaction(async (tx) => {
     const [newRecipe] = await tx
       .insert(recipe)
@@ -707,6 +740,20 @@ router.patch('/recipes/:id', async (req, res) => {
   }
 
   const { title, description, baseServings, categoryId, steps, ingredients } = parsed.data;
+
+  if (title !== undefined && !textIsClean(title)) {
+    res.status(400).json({ error: 'Recipe title contains inappropriate content' });
+    return;
+  }
+
+  if (categoryId) {
+    const [cat] = await db
+      .select({ id: recipeCategory.id })
+      .from(recipeCategory)
+      .where(and(eq(recipeCategory.id, categoryId), eq(recipeCategory.recipeBookId, req.recipeBookId)))
+      .limit(1);
+    if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
+  }
 
   const result = await db.transaction(async (tx) => {
     const [updated] = await tx
