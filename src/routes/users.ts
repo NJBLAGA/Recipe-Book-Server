@@ -95,7 +95,7 @@ router.post('/me/picture', upload.single('image'), async (req, res) => {
   // Remove old Cloudinary image if one exists
   if (req.user.image?.includes('cloudinary.com')) {
     const oldPublicId = extractPublicId(req.user.image);
-    if (oldPublicId) await deleteImage(oldPublicId);
+    if (oldPublicId) await deleteImage(oldPublicId).catch(() => {});
   }
 
   const url = await uploadImage(req.file.buffer, `profile-pictures`);

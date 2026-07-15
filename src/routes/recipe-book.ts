@@ -978,7 +978,7 @@ router.delete('/recipes/:id/images/:imageId', async (req, res) => {
   }
 
   const publicId = extractPublicId(image.url);
-  if (publicId) await deleteImage(publicId);
+  if (publicId) await deleteImage(publicId).catch(() => {});
 
   await db.delete(recipeImage).where(eq(recipeImage.id, image.id));
 

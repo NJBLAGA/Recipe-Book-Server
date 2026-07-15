@@ -18,5 +18,6 @@ export async function findOrCreateIngredient(tx: any, name: string): Promise<str
     .where(eq(ingredient.name, normalized))
     .limit(1);
 
+  if (!existing) throw new Error(`Ingredient '${normalized}' not found after insert conflict`);
   return existing.id;
 }

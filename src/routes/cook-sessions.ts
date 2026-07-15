@@ -363,7 +363,7 @@ router.delete('/:id/images/:imageId', async (req, res) => {
   if (!image) { res.status(404).json({ error: 'Image not found' }); return; }
 
   const publicId = extractPublicId(image.url);
-  if (publicId) await deleteImage(publicId);
+  if (publicId) await deleteImage(publicId).catch(() => {});
   await db.delete(recipeCookImage).where(eq(recipeCookImage.id, image.id));
 
   res.json({ message: 'Image deleted' });
