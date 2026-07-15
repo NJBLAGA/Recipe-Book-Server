@@ -17,6 +17,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
     .from(shoppingList)
     .where(eq(shoppingList.householdId, req.householdId))
     .limit(1);
+  if (!s) { res.status(500).json({ error: 'Shopping list not found' }); return; }
   req.shoppingListId = s.id;
   next();
 });

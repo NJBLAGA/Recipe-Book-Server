@@ -3,7 +3,6 @@ import { and, asc, eq, ilike, isNotNull, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { user } from '../schema/auth';
-import { household, householdUser } from '../schema/household';
 import { userPinnedRecipe } from '../schema/social';
 import { recipe } from '../schema/recipe';
 import { requireAuth } from '../middleware/requireAuth';
@@ -32,6 +31,7 @@ router.get('/me', async (req, res) => {
     .where(eq(user.id, req.user.id))
     .limit(1);
 
+  if (!profile) { res.status(404).json({ error: 'User not found' }); return; }
   res.json(profile);
 });
 
@@ -120,12 +120,8 @@ router.get('/search', async (req, res) => {
       name: user.name,
       handle: user.handle,
       image: user.image,
-      householdId: household.id,
-      householdName: household.name,
     })
     .from(user)
-    .leftJoin(householdUser, eq(user.id, householdUser.userId))
-    .leftJoin(household, eq(householdUser.householdId, household.id))
     .where(and(isNotNull(user.handle), ilike(user.handle, `%${handle}%`)))
     .limit(20);
 

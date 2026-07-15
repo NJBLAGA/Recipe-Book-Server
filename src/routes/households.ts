@@ -200,6 +200,22 @@ router.post('/:id/invites', async (req, res) => {
     return;
   }
 
+  // Cap total pending invites/requests for the target user to prevent inbox flooding
+  const pendingForTarget = await db
+    .select({ id: householdJoinRequest.id })
+    .from(householdJoinRequest)
+    .where(
+      and(
+        eq(householdJoinRequest.userId, targetUserId),
+        eq(householdJoinRequest.status, 'PENDING')
+      )
+    );
+
+  if (pendingForTarget.length >= 10) {
+    res.status(429).json({ error: 'This user has too many pending invites — wait for some to resolve first' });
+    return;
+  }
+
   const [h] = await db
     .select({ name: household.name })
     .from(household)
@@ -276,6 +292,23 @@ router.post('/:id/requests', async (req, res) => {
 
   if (existingRequest.length > 0) {
     res.status(409).json({ error: 'You already have a pending request to this household' });
+    return;
+  }
+
+  // Cap total pending requests from this user to prevent spam
+  const pendingFromUser = await db
+    .select({ id: householdJoinRequest.id })
+    .from(householdJoinRequest)
+    .where(
+      and(
+        eq(householdJoinRequest.userId, req.user.id),
+        eq(householdJoinRequest.status, 'PENDING'),
+        eq(householdJoinRequest.type, 'REQUEST')
+      )
+    );
+
+  if (pendingFromUser.length >= 10) {
+    res.status(429).json({ error: 'Too many pending requests — cancel some before sending more' });
     return;
   }
 
@@ -360,45 +393,73 @@ router.post('/join-requests/:id/accept', async (req, res) => {
 
   const joiningUserId = joinRequest.userId;
 
-  await db.transaction(async (tx) => {
-    await tx.insert(householdUser).values({
-      householdId: joinRequest.householdId,
-      userId: joiningUserId,
-      role: 'USER',
-    });
+  // Check that the joining user hasn't joined another household since the request was created.
+  // This must happen inside the transaction so the unique constraint on householdUser.userId
+  // can still catch the narrow concurrent-accept race as a DB-level safety net.
+  let joiningUserAlreadyInHousehold = false;
+  try {
+    await db.transaction(async (tx) => {
+      const [alreadyMember] = await tx
+        .select({ id: householdUser.id })
+        .from(householdUser)
+        .where(eq(householdUser.userId, joiningUserId))
+        .limit(1);
 
-    await tx
-      .update(householdJoinRequest)
-      .set({ status: 'ACCEPTED' })
-      .where(eq(householdJoinRequest.id, joinRequest.id));
+      if (alreadyMember) {
+        joiningUserAlreadyInHousehold = true;
+        return;
+      }
 
-    // Cancel every other pending invite/request for the joining user
-    await tx
-      .update(householdJoinRequest)
-      .set({ status: 'CANCELLED' })
-      .where(
-        and(
-          eq(householdJoinRequest.userId, joiningUserId),
-          eq(householdJoinRequest.status, 'PENDING'),
-          ne(householdJoinRequest.id, joinRequest.id)
-        )
-      );
-
-    const notifyUserId =
-      joinRequest.type === 'REQUEST' ? joiningUserId : joinRequest.initiatedByUserId;
-
-    await tx.insert(notification).values({
-      userId: notifyUserId,
-      type: joinRequest.type === 'REQUEST' ? 'JOIN_REQUEST' : 'HOUSEHOLD_INVITE',
-      payload: {
-        joinRequestId: joinRequest.id,
+      await tx.insert(householdUser).values({
         householdId: joinRequest.householdId,
-        status: 'ACCEPTED',
-        actingUserId: req.user.id,
-        actingUserName: req.user.name,
-      },
+        userId: joiningUserId,
+        role: 'USER',
+      });
+
+      await tx
+        .update(householdJoinRequest)
+        .set({ status: 'ACCEPTED' })
+        .where(eq(householdJoinRequest.id, joinRequest.id));
+
+      // Cancel every other pending invite/request for the joining user
+      await tx
+        .update(householdJoinRequest)
+        .set({ status: 'CANCELLED' })
+        .where(
+          and(
+            eq(householdJoinRequest.userId, joiningUserId),
+            eq(householdJoinRequest.status, 'PENDING'),
+            ne(householdJoinRequest.id, joinRequest.id)
+          )
+        );
+
+      const notifyUserId =
+        joinRequest.type === 'REQUEST' ? joiningUserId : joinRequest.initiatedByUserId;
+
+      await tx.insert(notification).values({
+        userId: notifyUserId,
+        type: joinRequest.type === 'REQUEST' ? 'JOIN_REQUEST' : 'HOUSEHOLD_INVITE',
+        payload: {
+          joinRequestId: joinRequest.id,
+          householdId: joinRequest.householdId,
+          status: 'ACCEPTED',
+          actingUserId: req.user.id,
+          actingUserName: req.user.name,
+        },
+      });
     });
-  });
+  } catch (e: any) {
+    if (e?.code === '23505') {
+      res.status(409).json({ error: 'This user has already joined another household' });
+      return;
+    }
+    throw e;
+  }
+
+  if (joiningUserAlreadyInHousehold) {
+    res.status(409).json({ error: 'This user has already joined another household' });
+    return;
+  }
 
   res.json({ message: 'Accepted' });
 });
@@ -654,8 +715,34 @@ router.post('/:id/leave', async (req, res) => {
       return;
     }
 
-    // Last member — delete the household; CASCADE removes everything under it
-    await db.delete(household).where(eq(household.id, householdId));
+    // Last member — delete the household atomically. Re-checking inside the
+    // transaction prevents a concurrent invite-accept from racing in between
+    // the member-count check above and the delete below.
+    let concurrentJoin = false;
+    await db.transaction(async (tx) => {
+      const [raceEntry] = await tx
+        .select({ id: householdUser.id })
+        .from(householdUser)
+        .where(
+          and(
+            eq(householdUser.householdId, householdId),
+            ne(householdUser.userId, req.user.id)
+          )
+        )
+        .limit(1);
+
+      if (raceEntry) {
+        concurrentJoin = true;
+        return;
+      }
+
+      await tx.delete(household).where(eq(household.id, householdId));
+    });
+
+    if (concurrentJoin) {
+      res.status(400).json({ error: 'Transfer ownership to another member before leaving' });
+      return;
+    }
   } else {
     await db.transaction(async (tx) => {
       await tx

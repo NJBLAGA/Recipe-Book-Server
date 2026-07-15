@@ -33,6 +33,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
     .where(eq(recipeBook.householdId, req.householdId))
     .limit(1);
 
+  if (!book) { res.status(500).json({ error: 'Recipe book not found' }); return; }
   req.recipeBookId = book.id;
   next();
 });
@@ -182,9 +183,15 @@ router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) =
     return;
   }
 
-  const extracted = await extractRecipeFromImages(
-    files.map((f) => ({ buffer: f.buffer, mimetype: f.mimetype }))
-  );
+  let extracted: ExtractedRecipe;
+  try {
+    extracted = await extractRecipeFromImages(
+      files.map((f) => ({ buffer: f.buffer, mimetype: f.mimetype }))
+    );
+  } catch {
+    res.status(422).json({ error: 'Could not extract a recipe from the provided image(s)' });
+    return;
+  }
 
   if (!recipeIsClean(extracted)) {
     res.status(422).json({ error: 'Extracted recipe contains inappropriate content' });
@@ -241,9 +248,22 @@ router.post('/import-url', async (req, res) => {
       return;
     }
 
-    html = await response.text();
-    // Hard cap for chunked responses that don't declare Content-Length
-    if (html.length > 2_000_000) html = html.slice(0, 2_000_000);
+    // Stream the body in chunks, stopping at 2 MB to prevent memory exhaustion
+    // from malicious or excessively large pages that don't declare Content-Length
+    if (!response.body) throw new Error('Empty response body');
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    html = '';
+    try {
+      while (html.length < 2_000_000) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        html += decoder.decode(value, { stream: true });
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    html = html.slice(0, 2_000_000);
   } catch {
     res.status(422).json({
       error: 'Could not fetch that URL — the site may be blocking automated access. Try uploading a screenshot instead.',
@@ -610,7 +630,17 @@ router.post('/recipes', async (req, res) => {
   const { title, description, baseServings, categoryId, steps, ingredients } = parsed.data;
 
   if (!textIsClean(title)) {
-    res.status(400).json({ error: 'Recipe title contains inappropriate content' });
+    res.status(400).json({ error: 'Recipe contains inappropriate content' });
+    return;
+  }
+
+  if (ingredients.some(ing => !textIsClean(ing.name) || (ing.note && !textIsClean(ing.note)))) {
+    res.status(400).json({ error: 'Recipe contains inappropriate content' });
+    return;
+  }
+
+  if (steps.some(step => !textIsClean(step))) {
+    res.status(400).json({ error: 'Recipe contains inappropriate content' });
     return;
   }
 
@@ -742,7 +772,17 @@ router.patch('/recipes/:id', async (req, res) => {
   const { title, description, baseServings, categoryId, steps, ingredients } = parsed.data;
 
   if (title !== undefined && !textIsClean(title)) {
-    res.status(400).json({ error: 'Recipe title contains inappropriate content' });
+    res.status(400).json({ error: 'Recipe contains inappropriate content' });
+    return;
+  }
+
+  if (ingredients !== undefined && ingredients.some(ing => !textIsClean(ing.name) || (ing.note && !textIsClean(ing.note)))) {
+    res.status(400).json({ error: 'Recipe contains inappropriate content' });
+    return;
+  }
+
+  if (steps !== undefined && steps.some(step => !textIsClean(step))) {
+    res.status(400).json({ error: 'Recipe contains inappropriate content' });
     return;
   }
 
@@ -813,7 +853,19 @@ router.delete('/recipes/:id', async (req, res) => {
     return;
   }
 
+  // Fetch image URLs before delete so we can clean up Cloudinary after
+  const images = await db
+    .select({ url: recipeImage.url })
+    .from(recipeImage)
+    .where(eq(recipeImage.recipeId, req.params.id));
+
   await db.delete(recipe).where(eq(recipe.id, req.params.id));
+
+  // Remove assets from Cloudinary — errors are swallowed so the API always returns 200
+  for (const img of images) {
+    const publicId = extractPublicId(img.url);
+    if (publicId) await deleteImage(publicId).catch(() => {});
+  }
 
   res.json({ message: 'Recipe deleted' });
 });

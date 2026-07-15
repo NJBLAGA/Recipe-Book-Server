@@ -20,6 +20,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
     .from(recipeBook)
     .where(eq(recipeBook.householdId, req.householdId))
     .limit(1);
+  if (!book) { res.status(500).json({ error: 'Recipe book not found' }); return; }
   req.recipeBookId = book.id;
   next();
 });
@@ -39,6 +40,8 @@ async function copyRecipe(
     .from(recipe)
     .where(eq(recipe.id, originalRecipeId))
     .limit(1);
+
+  if (!original) throw new Error('Original recipe was deleted before the copy could complete');
 
   const [copy] = await tx
     .insert(recipe)

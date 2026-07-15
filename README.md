@@ -927,8 +927,22 @@ Up to 5 recipes manually pinned by a user for their public profile. `recipeId` u
 **Content moderation on all recipe input paths** — `src/lib/moderation.ts` exposes three functions used across the recipe routes:
 - `urlStringIsClean(url)` — called at `POST /import-url` after the SSRF check; decodes percent-encoding before testing so `%66uck`-style bypasses are caught.
 - `recipeIsClean(extracted)` — called after every extraction (scan and URL import) before returning to the frontend; checks title, description, all ingredient names, all ingredient notes, and all steps.
-- `textIsClean(title)` — called at `POST /recipes` and `PATCH /recipes/:id` as the final gate before any recipe is saved; checks the title field only (ingredient/step content is too likely to overlap with legitimate food vocabulary for aggressive save-time filtering).
-All three paths (manual entry, image scan, URL import) converge on the save endpoint, so the save-time title check covers manual input. The extraction checks provide an earlier gate for AI-derived content from external sources.
+- `textIsClean(text)` — called at `POST /recipes` and `PATCH /recipes/:id` before save; checks the title, all ingredient names, all ingredient notes, and all steps. Word-boundary regex anchoring (`\bterm`) prevents food-vocabulary false positives (e.g. "shiitake" or "canal" never match blocked terms).
+All three paths (manual entry, image scan, URL import) are covered: URL strings are checked before fetching; extracted content is checked after extraction; manually submitted recipe fields are checked before insert/update.
+
+**Cloudinary cleanup on row delete** — Before deleting a `recipe` or `pantry_item`, the API fetches all associated image URLs, deletes the DB row (CASCADE removes child image rows), then calls Cloudinary `delete` for each URL. Cloudinary errors are swallowed with `.catch(() => {})` so a Cloudinary outage never blocks a user from deleting a recipe or pantry item. The trade-off is a potential Cloudinary asset orphan on network failure, which is acceptable at MVP scale.
+
+**Pending invites/requests capped at 10** — Before creating a new `HOUSEHOLD_INVITE` or `JOIN_REQUEST`, the route checks that the target user has fewer than 10 pending invites/requests in total. This prevents a household from flooding a user's inbox, and prevents a user from spamming multiple households with join requests.
+
+**Join-request accept is atomic** — The accept handler wraps all side-effects (insert `household_user`, mark request `ACCEPTED`, cancel other pending requests, insert notification) in a single transaction. Inside the transaction, a pre-check verifies the joining user is not already a member of any household, handling the case where two accepts race (e.g. the user accepted another invite between the outer check and the insert). The DB-level `UNIQUE(household_user.userId)` constraint is a second line of defence for the narrow concurrent window; its error code (`23505`) is mapped to a clean 409 response.
+
+**Last-member household delete is atomic** — The check ("are there other members?") and the `DELETE household` are wrapped in a single transaction, preventing a race where an invite is accepted between the member-count check and the delete. If another member joined during that window, the transaction returns a `CONCURRENT_JOIN` sentinel and the route responds with 400 (transfer ownership first).
+
+**Import-URL body is streamed, not buffered** — The response body is read in chunks until 2 MB is accumulated, at which point reading stops. This prevents memory exhaustion from malicious servers that stream large responses without a `Content-Length` header. The existing `Content-Length` pre-check catches declared-large responses before any bytes are read.
+
+**Scan route errors are caught** — `extractRecipeFromImages` can throw (Anthropic API error, parse failure, schema validation failure). The scan route wraps the call in try/catch and returns 422 so unhandled extraction errors don't reach the Express 500 handler.
+
+**Claude response is Zod-validated** — `parseClaudeResponse` in `src/lib/anthropic.ts` previously cast the parsed JSON as `ExtractedRecipe` with no runtime check. It now runs `extractedRecipeSchema.safeParse(...)` on the raw JSON and throws a descriptive error if the shape is wrong. This surfaces model hallucinations early rather than letting malformed data propagate into the DB.
 
 ---
 

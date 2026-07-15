@@ -20,6 +20,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
     .from(pantry)
     .where(eq(pantry.householdId, req.householdId))
     .limit(1);
+  if (!p) { res.status(500).json({ error: 'Pantry not found' }); return; }
   req.pantryId = p.id;
   next();
 });
@@ -267,7 +268,19 @@ router.delete('/items/:id', async (req, res) => {
     .limit(1);
   if (!existing) { res.status(404).json({ error: 'Item not found' }); return; }
 
+  // Fetch images before delete for Cloudinary cleanup
+  const images = await db
+    .select({ url: pantryItemImage.url })
+    .from(pantryItemImage)
+    .where(eq(pantryItemImage.pantryItemId, req.params.id));
+
   await db.delete(pantryItem).where(eq(pantryItem.id, req.params.id));
+
+  for (const img of images) {
+    const publicId = extractPublicId(img.url);
+    if (publicId) await deleteImage(publicId).catch(() => {});
+  }
+
   res.json({ message: 'Item deleted' });
 });
 

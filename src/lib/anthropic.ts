@@ -1,6 +1,22 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const extractedIngredientSchema = z.object({
+  name: z.string(),
+  quantity: z.number().nullable(),
+  unit: z.string().nullable(),
+  note: z.string().nullable(),
+});
+
+const extractedRecipeSchema = z.object({
+  title: z.string().min(1),
+  description: z.string().nullable(),
+  baseServings: z.number().int().positive(),
+  steps: z.array(z.string()).min(1),
+  ingredients: z.array(extractedIngredientSchema).min(1),
+});
 
 export interface ExtractedIngredient {
   name: string;
@@ -93,5 +109,7 @@ function parseClaudeResponse(message: Anthropic.Message): ExtractedRecipe {
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Could not parse recipe JSON from model response');
 
-  return JSON.parse(jsonMatch[0]) as ExtractedRecipe;
+  const validation = extractedRecipeSchema.safeParse(JSON.parse(jsonMatch[0]));
+  if (!validation.success) throw new Error('Extracted recipe has an unexpected shape');
+  return validation.data;
 }

@@ -68,6 +68,17 @@ router.post('/timers', async (req, res) => {
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
+  // Cap pending timers per user to prevent memory exhaustion in the scheduler
+  const pendingTimers = await db
+    .select({ id: pushTimer.id })
+    .from(pushTimer)
+    .where(and(eq(pushTimer.userId, req.user.id), eq(pushTimer.status, 'PENDING')));
+
+  if (pendingTimers.length >= 20) {
+    res.status(429).json({ error: 'Too many active timers — cancel some before creating more' });
+    return;
+  }
+
   const fireAt = new Date(Date.now() + parsed.data.duration * 1000);
 
   const [timer] = await db

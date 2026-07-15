@@ -20,6 +20,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
     .from(recipeBook)
     .where(eq(recipeBook.householdId, req.householdId))
     .limit(1);
+  if (!book) { res.status(500).json({ error: 'Recipe book not found' }); return; }
   req.recipeBookId = book.id;
   next();
 });
@@ -192,6 +193,11 @@ router.post('/:id/complete', async (req, res) => {
     .from(pantry)
     .where(eq(pantry.householdId, req.householdId))
     .limit(1);
+
+  if (!pantryRow) {
+    res.status(500).json({ error: 'Pantry not found' });
+    return;
+  }
 
   const changes = session.pendingChanges ?? { ticked: [], pantryChanges: [], extraChanges: [] };
   const allBatchChanges = [...changes.pantryChanges, ...changes.extraChanges];
