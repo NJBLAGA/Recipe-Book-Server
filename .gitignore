@@ -3,6 +3,7 @@ node_modules/
 
 # Environment variables — contains secrets (DB password, API keys). NEVER commit this.
 .env
+.env.test
 .env.local
 .env.*.local
 
