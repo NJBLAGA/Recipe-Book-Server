@@ -37,7 +37,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // Stricter rate limiter for the scan endpoint — keyed by user ID so it follows
-// the account even if the IP changes. 5 scans per 10 minutes per user.
+// the account even if the IP changes. 20 scans per hour per user.
 const scanLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
@@ -222,7 +222,17 @@ router.post('/import-url', async (req, res) => {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    // Reject responses that declare themselves too large before reading the body
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength) > 2_000_000) {
+      res.status(422).json({ error: 'Page is too large to import — try uploading a screenshot instead.' });
+      return;
+    }
+
     html = await response.text();
+    // Hard cap for chunked responses that don't declare Content-Length
+    if (html.length > 2_000_000) html = html.slice(0, 2_000_000);
   } catch {
     res.status(422).json({
       error: 'Could not fetch that URL — the site may be blocking automated access. Try uploading a screenshot instead.',
