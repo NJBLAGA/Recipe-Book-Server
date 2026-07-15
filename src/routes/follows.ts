@@ -22,7 +22,8 @@ router.get('/following', async (req, res) => {
     .from(follow)
     .innerJoin(user, eq(follow.followingId, user.id))
     .where(eq(follow.followerId, req.user.id))
-    .orderBy(asc(user.name));
+    .orderBy(asc(user.name))
+    .limit(500);
 
   res.json(results);
 });
@@ -40,7 +41,8 @@ router.get('/followers', async (req, res) => {
     .from(follow)
     .innerJoin(user, eq(follow.followerId, user.id))
     .where(eq(follow.followingId, req.user.id))
-    .orderBy(asc(user.name));
+    .orderBy(asc(user.name))
+    .limit(500);
 
   res.json(results);
 });

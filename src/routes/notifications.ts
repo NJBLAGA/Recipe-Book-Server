@@ -18,7 +18,8 @@ router.get('/', async (req, res) => {
     .select()
     .from(notification)
     .where(and(...conditions))
-    .orderBy(desc(notification.createdAt));
+    .orderBy(desc(notification.createdAt))
+    .limit(100);
 
   res.json(notifications);
 });
