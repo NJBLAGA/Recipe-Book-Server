@@ -1009,7 +1009,11 @@ All routes under `/api` require authentication unless noted. Auth is checked via
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, householdId, householdName. Used to find people to invite or households to request joining. |
+| GET | `/api/users/me` | ✓ | Get the current user's own profile (id, name, email, handle, firstName, lastName, bio, image, theme, createdAt). |
+| PATCH | `/api/users/me` | ✓ | Update profile fields. Body: `{ handle?, firstName?, lastName?, bio?, theme? }` (all optional). Handle must be 2–40 chars, alphanumeric + underscores. 409 if handle is taken. Updating firstName/lastName also updates the `name` field. |
+| POST | `/api/users/me/picture` | ✓ | Upload a profile picture. `multipart/form-data`, field `image`. Stored in Cloudinary under `profile-pictures/`. Old Cloudinary image is deleted automatically. |
+| GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, householdId, householdName. Used to find people to invite or share recipes with. |
+| GET | `/api/users/:handle` | ✓ | Public profile for any user. Returns id, name, handle, firstName, lastName, bio, image, createdAt, plus `pins[]` (position, recipeId, recipeTitle — null recipeId means the recipe was deleted). |
 
 ### Recipe Book
 
@@ -1029,6 +1033,9 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | POST | `/api/recipe-book/recipes/:id/images` | Upload an image for a recipe. `multipart/form-data`, field name `image`. Max 10MB, images only. Stores in Cloudinary, saves URL to `recipe_image`. |
 | PATCH | `/api/recipe-book/recipes/:id/images/order` | Reorder images. Body: `[{ id, sortOrder }]`. |
 | DELETE | `/api/recipe-book/recipes/:id/images/:imageId` | Delete an image from Cloudinary and the DB. |
+| GET | `/api/recipe-book/pins` | Get the current user's pinned recipes (up to 5). Returns `[{ position, recipeId, recipeTitle, recipeDescription }]` ordered by position. `recipeId` and `recipeTitle` are null if the recipe was deleted. |
+| PUT | `/api/recipe-book/pins` | Replace all pins atomically. Body: `[{ position, recipeId }]`, max 5 entries, positions 1–5, no duplicates. Validates all recipeIds exist in the household's book. |
+| GET | `/api/recipe-book/can-make` | Match all recipes against the current pantry stock. No-quantity ingredients ("a pinch of salt") are never counted against a recipe. Returns `{ ready: [], almost: [], rest: [] }`. `ready` = all measurable ingredients in stock; `almost` = 1–2 missing (with `missingIngredients` list and `matchPct`); `rest` = remaining recipes sorted by `matchPct` descending. |
 
 ### Ingredients
 
@@ -1099,3 +1106,54 @@ Cook sessions are user-scoped (not household-scoped). The user must belong to a 
 | PATCH | `/api/cook-sessions/:id/note` | Add or update a note on a COMPLETED session. Body: `{ note }` (nullable). |
 | POST | `/api/cook-sessions/:id/images` | Upload a photo of the cook attempt. `multipart/form-data`, field `image`. Stored in Cloudinary under `cook-images/{userId}`. Only allowed on COMPLETED sessions. |
 | DELETE | `/api/cook-sessions/:id/images/:imageId` | Delete a cook session photo. |
+
+### Notifications
+
+In-app inbox. Polled periodically — no real-time push (push notifications are a separate `push_timer` feature, not used for inbox).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/notifications` | List all notifications for the current user, newest first. Optional `?unread=true` to filter to unread only. |
+| GET | `/api/notifications/unread-count` | Returns `{ count: number }` for the inbox badge. |
+| PATCH | `/api/notifications/read-all` | Mark all notifications as read. |
+| PATCH | `/api/notifications/:id/read` | Mark a single notification as read. |
+
+### Shares & Reviews
+
+Sharing is copy-on-accept. A share record is permanent — history outlives both the original recipe and the copied recipe. Reviews are anchored to the share, not the recipe directly.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/shares/received` | Shares sent to the current user, newest first. Includes sender info, recipe title (null if original deleted), status, and copiedRecipeId. |
+| GET | `/api/shares/sent` | Shares sent by the current user. |
+| POST | `/api/shares` | Share a recipe. Body: `{ recipeId, toUserId }`. Recipe must be in your household's book. 409 if a pending share already exists for this recipe+recipient. Creates a `RECIPE_SHARED` notification for the recipient. |
+| POST | `/api/shares/:id/accept` | Accept a share. Copies the original recipe into the recipient's household book (title, description, baseServings, steps, ingredients — not images) with `sharedByUserId` and `originalRecipeId` set. 410 if the original was deleted. |
+| POST | `/api/shares/:id/reject` | Reject a pending share. |
+| POST | `/api/shares/:id/recopy` | Re-copy from the original after the recipient deleted their copy. Only when `copiedRecipeId` is null (copy deleted) and `recipeId` is not null (original still exists). |
+| GET | `/api/shares/:shareId/review` | Get the review for a share (one per share). 404 if no review yet. |
+| POST | `/api/shares/:shareId/review` | Create a review. Body: `{ rating: 1–5, comment? }`. 409 if a review already exists — use PATCH to update. |
+| PATCH | `/api/shares/:shareId/review` | Update an existing review. Body: `{ rating?, comment? }`. Can update stars and/or comment at any time. |
+
+### Follows
+
+Contact list for the share dialog — no feed or timeline mechanics.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/follows/following` | Users the current user follows, ordered by name. |
+| GET | `/api/follows/followers` | Users who follow the current user, ordered by name. |
+| POST | `/api/follows` | Follow a user. Body: `{ followingId }`. 400 if self-follow, 409 if already following. |
+| DELETE | `/api/follows/:userId` | Unfollow a user. |
+
+### Push Notifications (cooking timers)
+
+Background push notifications for cooking timers. The timer fires even when the phone is locked. Built on the Web Push API with VAPID keys.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/push/vapid-public-key` | Get the server's VAPID public key — required by the browser's `pushManager.subscribe()` call. |
+| POST | `/api/push/subscribe` | Register a push subscription for the current device/browser. Body: the `PushSubscription` object from `pushManager.subscribe()`. |
+| DELETE | `/api/push/subscribe` | Remove the current device's push subscription. Body: `{ endpoint }`. |
+| GET | `/api/push/timers` | List the current user's timers (`PENDING` and `FIRED`). |
+| POST | `/api/push/timers` | Create a cooking timer. Body: `{ label: string, duration: number }` (duration in seconds, max 86400 = 24h). Fires a push notification when it expires, even if the phone is locked. Timer is persisted and recovered on server restart. |
+| DELETE | `/api/push/timers/:id` | Cancel and delete a timer. |

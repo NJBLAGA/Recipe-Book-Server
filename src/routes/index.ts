@@ -7,6 +7,9 @@ import pantryRouter from './pantry';
 import shoppingListRouter from './shopping-list';
 import cookSessionsRouter from './cook-sessions';
 import pushRouter from './push';
+import notificationsRouter from './notifications';
+import sharesRouter from './shares';
+import followsRouter from './follows';
 
 const router = Router();
 
@@ -18,5 +21,8 @@ router.use('/pantry', pantryRouter);
 router.use('/shopping-list', shoppingListRouter);
 router.use('/cook-sessions', cookSessionsRouter);
 router.use('/push', pushRouter);
+router.use('/notifications', notificationsRouter);
+router.use('/shares', sharesRouter);
+router.use('/follows', followsRouter);
 
 export default router;

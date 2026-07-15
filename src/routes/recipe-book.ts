@@ -1,9 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { and, asc, eq, ilike } from 'drizzle-orm';
+import { and, asc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { recipeBook, recipeCategory, recipe, recipeIngredient, recipeImage } from '../schema/recipe';
 import { ingredient } from '../schema/ingredient';
+import { pantry, pantryItem, pantryBatch } from '../schema/pantry';
+import { userPinnedRecipe } from '../schema/social';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
 import { upload } from '../lib/upload';
@@ -158,6 +160,166 @@ router.delete('/categories/:id', async (req, res) => {
   await db.delete(recipeCategory).where(eq(recipeCategory.id, req.params.id));
 
   res.json({ message: 'Category deleted' });
+});
+
+// ─── Pins routes ─────────────────────────────────────────────────────────────
+
+// GET /api/recipe-book/pins — current user's pinned recipes (positions 1-5)
+router.get('/pins', async (req, res) => {
+  const pins = await db
+    .select({
+      position: userPinnedRecipe.position,
+      recipeId: userPinnedRecipe.recipeId,
+      recipeTitle: recipe.title,
+      recipeDescription: recipe.description,
+    })
+    .from(userPinnedRecipe)
+    .leftJoin(recipe, eq(userPinnedRecipe.recipeId, recipe.id))
+    .where(eq(userPinnedRecipe.userId, req.user.id))
+    .orderBy(asc(userPinnedRecipe.position));
+
+  res.json(pins);
+});
+
+// PUT /api/recipe-book/pins — replace all pins atomically
+router.put('/pins', async (req, res) => {
+  const parsed = z.array(
+    z.object({
+      position: z.number().int().min(1).max(5),
+      recipeId: z.string().uuid(),
+    })
+  ).max(5, 'Maximum 5 pinned recipes').safeParse(req.body);
+
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
+
+  const recipeIds = parsed.data.map(p => p.recipeId);
+  const positions = parsed.data.map(p => p.position);
+
+  if (new Set(recipeIds).size !== recipeIds.length) {
+    res.status(400).json({ error: 'Duplicate recipes in pins' });
+    return;
+  }
+  if (new Set(positions).size !== positions.length) {
+    res.status(400).json({ error: 'Duplicate positions in pins' });
+    return;
+  }
+
+  if (recipeIds.length > 0) {
+    const validRecipes = await db
+      .select({ id: recipe.id })
+      .from(recipe)
+      .where(and(eq(recipe.recipeBookId, req.recipeBookId), inArray(recipe.id, recipeIds)));
+
+    if (validRecipes.length !== recipeIds.length) {
+      res.status(400).json({ error: 'One or more recipes not found in your recipe book' });
+      return;
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.delete(userPinnedRecipe).where(eq(userPinnedRecipe.userId, req.user.id));
+
+    if (parsed.data.length > 0) {
+      await tx.insert(userPinnedRecipe).values(
+        parsed.data.map(p => ({ userId: req.user.id, recipeId: p.recipeId, position: p.position }))
+      );
+    }
+  });
+
+  res.json({ message: 'Pins updated' });
+});
+
+// ─── Can-make route ───────────────────────────────────────────────────────────
+
+// GET /api/recipe-book/can-make — tier all recipes by pantry stock
+router.get('/can-make', async (req, res) => {
+  const [p] = await db
+    .select({ id: pantry.id })
+    .from(pantry)
+    .where(eq(pantry.householdId, req.householdId))
+    .limit(1);
+
+  if (!p) { res.json({ ready: [], almost: [], rest: [] }); return; }
+
+  const recipes = await db
+    .select({ id: recipe.id, title: recipe.title })
+    .from(recipe)
+    .where(eq(recipe.recipeBookId, req.recipeBookId))
+    .orderBy(asc(recipe.title));
+
+  if (recipes.length === 0) { res.json({ ready: [], almost: [], rest: [] }); return; }
+
+  // effectiveStock = SUM(fillLevel) across all batches per pantry item
+  const stockRows = await db
+    .select({
+      ingredientId: pantryItem.ingredientId,
+      effectiveStock: sql<number>`COALESCE(SUM(${pantryBatch.fillLevel}), 0)::int`,
+    })
+    .from(pantryItem)
+    .leftJoin(pantryBatch, eq(pantryBatch.pantryItemId, pantryItem.id))
+    .where(eq(pantryItem.pantryId, p.id))
+    .groupBy(pantryItem.ingredientId);
+
+  const stockMap = new Map(stockRows.map(r => [r.ingredientId, r.effectiveStock]));
+
+  const recipeIdList = recipes.map(r => r.id);
+
+  const ingRows = await db
+    .select({
+      recipeId: recipeIngredient.recipeId,
+      ingredientId: recipeIngredient.ingredientId,
+      name: ingredient.name,
+      quantity: recipeIngredient.quantity,
+    })
+    .from(recipeIngredient)
+    .innerJoin(ingredient, eq(recipeIngredient.ingredientId, ingredient.id))
+    .where(inArray(recipeIngredient.recipeId, recipeIdList));
+
+  const byRecipe = new Map<string, Array<{ ingredientId: string; name: string; quantity: string | null }>>();
+  for (const row of ingRows) {
+    if (!byRecipe.has(row.recipeId)) byRecipe.set(row.recipeId, []);
+    byRecipe.get(row.recipeId)!.push(row);
+  }
+
+  const ready: Array<{ id: string; title: string; runningLowItems: Array<{ ingredientId: string; name: string }> }> = [];
+  const almost: Array<{ id: string; title: string; matchPct: number; missingIngredients: Array<{ ingredientId: string; name: string }> }> = [];
+  const rest: Array<{ id: string; title: string; matchPct: number; missingCount: number }> = [];
+
+  for (const r of recipes) {
+    const ings = byRecipe.get(r.id) ?? [];
+    const measurable = ings.filter(i => i.quantity !== null);
+
+    const missing = measurable.filter(i => (stockMap.get(i.ingredientId) ?? 0) === 0);
+    const runningLow = measurable.filter(i => {
+      const stock = stockMap.get(i.ingredientId) ?? 0;
+      return stock > 0 && stock <= 25;
+    });
+
+    const matchPct = measurable.length > 0
+      ? Math.round(((measurable.length - missing.length) / measurable.length) * 100)
+      : 100;
+
+    if (missing.length === 0) {
+      ready.push({
+        id: r.id,
+        title: r.title,
+        runningLowItems: runningLow.map(i => ({ ingredientId: i.ingredientId, name: i.name })),
+      });
+    } else if (missing.length <= 2) {
+      almost.push({
+        id: r.id,
+        title: r.title,
+        matchPct,
+        missingIngredients: missing.map(i => ({ ingredientId: i.ingredientId, name: i.name })),
+      });
+    } else {
+      rest.push({ id: r.id, title: r.title, matchPct, missingCount: missing.length });
+    }
+  }
+
+  rest.sort((a, b) => b.matchPct - a.matchPct);
+
+  res.json({ ready, almost, rest });
 });
 
 // ─── Recipe routes ────────────────────────────────────────────────────────────
