@@ -9,9 +9,10 @@ const PASSWORD = 'TestPassword123!';
 /**
  * Signs up a new user, bypasses email verification directly in the DB,
  * then signs in and returns the session cookie for use in subsequent requests.
+ * Pass additionalFields (e.g. { firstName, lastName }) to test better-auth additionalFields.
  */
-export async function signIn(email: string, name = 'Test User'): Promise<string> {
-  await request(app).post('/api/auth/sign-up/email').send({ email, password: PASSWORD, name });
+export async function signIn(email: string, name = 'Test User', additionalFields?: Record<string, unknown>): Promise<string> {
+  await request(app).post('/api/auth/sign-up/email').send({ email, password: PASSWORD, name, ...additionalFields });
 
   // Email verification is required in auth config — bypass it in tests by
   // directly marking the user as verified in the DB.

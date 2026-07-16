@@ -3,6 +3,7 @@ import { and, asc, eq, ilike, isNotNull, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { user } from '../schema/auth';
+import { household, householdUser } from '../schema/household';
 import { userPinnedRecipe } from '../schema/social';
 import { recipe } from '../schema/recipe';
 import { requireAuth } from '../middleware/requireAuth';
@@ -110,6 +111,7 @@ router.post('/me/picture', upload.single('image'), async (req, res) => {
 });
 
 // GET /api/users/search?handle= — find users by handle (partial, case-insensitive)
+// Returns householdId + householdName so callers can send a join request directly.
 router.get('/search', async (req, res) => {
   const handle = typeof req.query.handle === 'string' ? req.query.handle.trim() : '';
   if (handle.length < 2) { res.status(400).json({ error: 'Search term must be at least 2 characters' }); return; }
@@ -120,8 +122,12 @@ router.get('/search', async (req, res) => {
       name: user.name,
       handle: user.handle,
       image: user.image,
+      householdId: householdUser.householdId,
+      householdName: household.name,
     })
     .from(user)
+    .leftJoin(householdUser, eq(user.id, householdUser.userId))
+    .leftJoin(household, eq(householdUser.householdId, household.id))
     .where(and(isNotNull(user.handle), ilike(user.handle, `%${handle}%`)))
     .limit(20);
 

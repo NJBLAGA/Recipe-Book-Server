@@ -90,10 +90,27 @@ router.get('/mine', async (req, res) => {
 });
 
 // GET /api/households/pending — pending invites for this user + pending requests to their household
+// Both lists are enriched with household name and the relevant user's name/handle/image.
 router.get('/pending', async (req, res) => {
+  // Invites sent to this user. fromName/Handle/Image = who sent the invite.
   const invites = await db
-    .select()
+    .select({
+      id: householdJoinRequest.id,
+      householdId: householdJoinRequest.householdId,
+      householdName: household.name,
+      userId: householdJoinRequest.userId,
+      initiatedByUserId: householdJoinRequest.initiatedByUserId,
+      fromName: user.name,
+      fromHandle: user.handle,
+      fromImage: user.image,
+      type: householdJoinRequest.type,
+      status: householdJoinRequest.status,
+      createdAt: householdJoinRequest.createdAt,
+      updatedAt: householdJoinRequest.updatedAt,
+    })
     .from(householdJoinRequest)
+    .innerJoin(household, eq(householdJoinRequest.householdId, household.id))
+    .innerJoin(user, eq(householdJoinRequest.initiatedByUserId, user.id))
     .where(
       and(
         eq(householdJoinRequest.userId, req.user.id),
@@ -108,13 +125,28 @@ router.get('/pending', async (req, res) => {
     .where(eq(householdUser.userId, req.user.id))
     .limit(1);
 
-  type JoinRequest = typeof householdJoinRequest.$inferSelect;
-  let requests: JoinRequest[] = [];
+  let requests: typeof invites = [];
 
   if (membershipRows.length > 0) {
+    // Join requests to this household. fromName/Handle/Image = who is requesting to join.
     requests = await db
-      .select()
+      .select({
+        id: householdJoinRequest.id,
+        householdId: householdJoinRequest.householdId,
+        householdName: household.name,
+        userId: householdJoinRequest.userId,
+        initiatedByUserId: householdJoinRequest.initiatedByUserId,
+        fromName: user.name,
+        fromHandle: user.handle,
+        fromImage: user.image,
+        type: householdJoinRequest.type,
+        status: householdJoinRequest.status,
+        createdAt: householdJoinRequest.createdAt,
+        updatedAt: householdJoinRequest.updatedAt,
+      })
       .from(householdJoinRequest)
+      .innerJoin(household, eq(householdJoinRequest.householdId, household.id))
+      .innerJoin(user, eq(householdJoinRequest.userId, user.id))
       .where(
         and(
           eq(householdJoinRequest.householdId, membershipRows[0].householdId),

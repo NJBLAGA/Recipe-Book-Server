@@ -174,7 +174,7 @@ const reorderImagesSchema = z.array(
 // ─── Scan route ───────────────────────────────────────────────────────────────
 
 // POST /api/recipe-book/scan
-// Accepts 1–10 ordered images, extracts a recipe via Claude vision, returns the
+// Accepts 1–10 ordered images, extracts a recipe via vision model, returns the
 // pre-filled recipe shape for the frontend review form. Images are never stored.
 router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) => {
   const files = req.files as Express.Multer.File[] | undefined;
@@ -205,8 +205,8 @@ router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) =
 // ─── URL import route ─────────────────────────────────────────────────────────
 
 // POST /api/recipe-book/import-url
-// 1. Fetches the page and looks for a JSON-LD Recipe schema (free, no AI cost).
-// 2. If not found, strips noise and sends the page text to Claude as a fallback.
+// 1. Fetches the page and looks for a JSON-LD Recipe schema (no API call needed).
+// 2. If not found, strips noise and sends the page text to the extraction model as a fallback.
 router.post('/import-url', async (req, res) => {
   const parsed = z.object({ url: z.string().url('A valid URL is required') }).safeParse(req.body);
   if (!parsed.success) {
@@ -292,7 +292,7 @@ router.post('/import-url', async (req, res) => {
   const $ = load(html);
 
   // Try JSON-LD structured data first — most recipe sites embed this and it
-  // maps directly with no AI cost.
+  // maps directly with no API call needed.
   let extracted: ExtractedRecipe | null = null;
 
   $('script[type="application/ld+json"]').each((_i, el) => {
@@ -320,7 +320,7 @@ router.post('/import-url', async (req, res) => {
     return;
   }
 
-  // Fallback: strip noise from the page and send the text to Claude.
+  // Fallback: strip noise from the page and send the text to the extraction model.
   $('script, style, nav, footer, header, aside, [aria-hidden="true"]').remove();
   const pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 20_000);
 

@@ -64,13 +64,19 @@ describe('Households', () => {
     expect(res.status).toBe(201);
   });
 
-  it('invited user can see the pending invite', async () => {
+  it('invited user can see the pending invite with enriched household and inviter info', async () => {
     const res = await request(app)
       .get('/api/households/pending')
       .set('Cookie', cookieB);
 
     expect(res.status).toBe(200);
     expect(res.body.invites.length).toBeGreaterThan(0);
+    const invite = res.body.invites[0];
+    // B2: enriched fields must be present
+    expect(invite.householdName).toBe('Alice Household');
+    expect(invite.fromName).toBeTruthy();
+    expect(invite.fromHandle).toBeDefined();
+    expect(invite.fromImage).toBeDefined();
   });
 
   it('invited user can accept the invite and join the household', async () => {

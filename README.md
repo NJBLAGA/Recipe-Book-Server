@@ -916,7 +916,17 @@ Up to 5 recipes manually pinned by a user for their public profile. `recipeId` u
 
 **Share history is permanent** — `recipe_share.recipeId` uses SET NULL so the share record outlives the original recipe. Recipients retain their history and reviews regardless of what the author does.
 
-**Email normalisation on every auth operation** — better-auth `hooks.before` normalises the email in the request body before sign-up, sign-in, password reset, and change-email. `databaseHooks.user.create/update.before` applies the same normalisation as a safety net at the DB write level. Rules: trim whitespace → lowercase → strip `+tag` for Gmail, Googlemail, Outlook, Hotmail, Live, MSN, Yahoo → remove dots from the local part for Gmail/Googlemail only (dot stripping is a Gmail-specific behaviour; dots are significant on all other providers). Result: `User+tag@Gmail.com`, `u.s.e.r@gmail.com`, and `user@gmail.com` all resolve to the same stored address.
+**First/last name derived from `firstName` + `lastName` at signup** — `POST /api/auth/sign-up/email` accepts `firstName` and `lastName` as `additionalFields`. The `databaseHooks.user.create.before` hook derives `name = "First Last"` from them when provided, overriding whatever was passed as `name`. This keeps the session's display name in sync with the structured name fields. If neither first nor last is provided (e.g. Google OAuth), the passed `name` is used unchanged.
+
+**Email normalisation on every auth operation** — better-auth `hooks.before` normalises `email` and `newEmail` (for change-email) in the request body before any auth operation. `databaseHooks.user.create/update.before` applies the same normalisation as a safety net at the DB write level. Rules: trim whitespace → lowercase → strip `+tag` for Gmail, Googlemail, Outlook, Hotmail, Live, MSN, Yahoo → remove dots from the local part for Gmail/Googlemail only (dot stripping is a Gmail-specific behaviour; dots are significant on all other providers). Result: `User+tag@Gmail.com`, `u.s.e.r@gmail.com`, and `user@gmail.com` all resolve to the same stored address.
+
+**Change email is two-step (confirmed via old email)** — `POST /api/auth/change-email { newEmail }` sends a confirmation link to the *current* email address via `sendChangeEmailConfirmation`. The email is only changed after the user clicks the link (which calls `/api/auth/verify-email` with a `change-email-confirmation` token). This prevents account hijacking via email typos. `newEmail` is normalised through the same rules as sign-up.
+
+**Delete account enforces the household ownership invariant** — `POST /api/auth/delete-user` runs a `beforeDelete` hook that mirrors the "leave" rule: an owner with other members receives 400 (must transfer ownership first); a sole owner's household is deleted in the hook (cascading all associated data — recipe book, pantry, shopping list, join requests) before the user row is deleted; a regular member's `household_user` row cascades automatically on user deletion.
+
+**`GET /api/households/pending` is enriched** — Both the `invites` and `requests` arrays now include `householdName`, `fromName`, `fromHandle`, `fromImage`. For invites, `fromName/Handle/Image` is the person who sent the invite; for requests, it is the person who wants to join. The field name is neutral across both types so the frontend can render invite/request cards with full context without extra round-trips, using the `type` field to distinguish them.
+
+**`GET /api/users/search` returns household context** — Results now include `householdId` and `householdName` (left-joined; null for users without a household). This enables the "request to join" flow: find a person in the directory → use their `householdId` to POST to `/api/households/:householdId/requests`.
 
 **Category ownership verified before write** — `categoryId` on `pantry_item`, `shopping_list_item`, and `recipe` accepts any FK-valid UUID. Without an explicit ownership check the column would silently accept a category from another household's pantry/list/book, leaking its name back in the JOIN response. All create and update routes now verify that `categoryId` (when non-null) belongs to the current household's pantry, shopping list, or recipe book before inserting or updating.
 
@@ -940,9 +950,9 @@ All three paths (manual entry, image scan, URL import) are covered: URL strings 
 
 **Import-URL body is streamed, not buffered** — The response body is read in chunks until 2 MB is accumulated, at which point reading stops. This prevents memory exhaustion from malicious servers that stream large responses without a `Content-Length` header. The existing `Content-Length` pre-check catches declared-large responses before any bytes are read.
 
-**Scan route errors are caught** — `extractRecipeFromImages` can throw (Anthropic API error, parse failure, schema validation failure). The scan route wraps the call in try/catch and returns 422 so unhandled extraction errors don't reach the Express 500 handler.
+**Scan route errors are caught** — `extractRecipeFromImages` can throw (API error, parse failure, schema validation failure). The scan route wraps the call in try/catch and returns 422 so unhandled extraction errors don't reach the Express 500 handler.
 
-**Claude response is Zod-validated** — `parseClaudeResponse` in `src/lib/anthropic.ts` previously cast the parsed JSON as `ExtractedRecipe` with no runtime check. It now runs `extractedRecipeSchema.safeParse(...)` on the raw JSON and throws a descriptive error if the shape is wrong. This surfaces model hallucinations early rather than letting malformed data propagate into the DB.
+**Model response is Zod-validated** — `parseModelResponse` in `src/lib/anthropic.ts` runs `extractedRecipeSchema.safeParse(...)` on the raw JSON response and throws a descriptive error if the shape is wrong. This catches malformed extraction output early rather than letting it propagate into the DB.
 
 ---
 
@@ -1007,13 +1017,15 @@ All routes under `/api` require authentication unless noted. Auth is checked via
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/auth/sign-up/email` | Register with email + password |
+| POST | `/api/auth/sign-up/email` | Register with email + password. Accepts `firstName` and `lastName` as additional fields; `name` is derived from them if both are provided. |
 | POST | `/api/auth/sign-in/email` | Sign in with email + password |
 | POST | `/api/auth/sign-out` | Sign out |
 | GET | `/api/auth/get-session` | Get current session + user |
-| POST | `/api/auth/verify-email` | Verify email address |
+| POST | `/api/auth/verify-email` | Verify email address (also handles change-email confirmation tokens) |
 | POST | `/api/auth/forget-password` | Request password reset email |
 | POST | `/api/auth/reset-password` | Reset password with token |
+| POST | `/api/auth/change-email` | Request an email change. Body: `{ newEmail, callbackURL? }`. Sends a confirmation link to the current email address; the email is only changed after the user clicks the link. `newEmail` is normalised through the same email-normalisation rules as sign-up. |
+| POST | `/api/auth/delete-user` | Delete the current user's account. Body: `{ password? }`. Owner-with-members receives 400 (must transfer ownership first). Sole owner's household is deleted first (cascading all data), then the user is removed. Regular members are simply removed. |
 | GET | `/api/auth/sign-in/social?provider=google` | Initiate Google OAuth |
 | GET | `/api/auth/callback/google` | Google OAuth callback |
 
@@ -1023,7 +1035,7 @@ All routes under `/api` require authentication unless noted. Auth is checked via
 |---|---|---|---|
 | POST | `/api/households` | ✓ | Create a household (caller becomes OWNER). Creates household + householdUser + recipeBook + pantry + shoppingList in one transaction. |
 | GET | `/api/households/mine` | ✓ | Get current user's household and their role. 404 if they have none. |
-| GET | `/api/households/pending` | ✓ | Pending invites directed at this user + pending join requests to their household (if they have one). |
+| GET | `/api/households/pending` | ✓ | Pending invites directed at this user + pending join requests to their household (if they have one). Both arrays include `householdName`, `fromName`, `fromHandle`, `fromImage`. On invites `from*` = the inviter; on requests `from*` = the requester. Use the `type` field to distinguish. |
 | POST | `/api/households/:id/invites` | ✓ member | Send an invite to a user by userId. Target must have no household. |
 | POST | `/api/households/:id/requests` | ✓ no-household | Request to join a household. |
 | POST | `/api/households/join-requests/:id/accept` | ✓ | Accept an invite (invited user only) or join request (any household member). Adds user to household + auto-cancels all their other pending invites/requests. |
@@ -1040,7 +1052,7 @@ All routes under `/api` require authentication unless noted. Auth is checked via
 | GET | `/api/users/me` | ✓ | Get the current user's own profile (id, name, email, handle, firstName, lastName, bio, image, theme, createdAt). |
 | PATCH | `/api/users/me` | ✓ | Update profile fields. Body: `{ handle?, firstName?, lastName?, bio?, theme? }` (all optional). Handle must be 2–40 chars, alphanumeric + underscores. 409 if handle is taken. Updating firstName/lastName also updates the `name` field. |
 | POST | `/api/users/me/picture` | ✓ | Upload a profile picture. `multipart/form-data`, field `image`. Stored in Cloudinary under `profile-pictures/`. Old Cloudinary image is deleted automatically. |
-| GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, householdId, householdName. Used to find people to invite or share recipes with. |
+| GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, `householdId`, `householdName` (both `null` if the user has no household). Used to find people to invite, share recipes with, or request to join their household. |
 | GET | `/api/users/:handle` | ✓ | Public profile for any user. Returns id, name, handle, firstName, lastName, bio, image, createdAt, plus `pins[]` (position, recipeId, recipeTitle — null recipeId means the recipe was deleted). |
 
 ### Recipe Book
@@ -1064,8 +1076,8 @@ All recipe-book routes require `requireHousehold` middleware — user must belon
 | GET | `/api/recipe-book/pins` | Get the current user's pinned recipes (up to 5). Returns `[{ position, recipeId, recipeTitle, recipeDescription }]` ordered by position. `recipeId` and `recipeTitle` are null if the recipe was deleted. |
 | PUT | `/api/recipe-book/pins` | Replace all pins atomically. Body: `[{ position, recipeId }]`, max 5 entries, positions 1–5, no duplicates. Validates all recipeIds exist in the household's book. |
 | GET | `/api/recipe-book/can-make` | Match all recipes against the current pantry stock. No-quantity ingredients ("a pinch of salt") are never counted against a recipe. Returns `{ ready: [], almost: [], rest: [] }`. `ready` = all measurable ingredients in stock; `almost` = 1–2 missing (with `missingIngredients` list and `matchPct`); `rest` = remaining recipes sorted by `matchPct` descending. |
-| POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent in order to Claude Haiku vision and never stored. Extracted content is checked for inappropriate material before returning. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
-| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. SSRF-protected (private/loopback addresses blocked). URL string checked for inappropriate content before fetching (percent-encoding decoded first). Fetches with 10-second timeout. First attempts to parse a JSON-LD `Recipe` schema from the page (no AI cost). If not found, strips navigation/noise and sends the page text to Claude Haiku as a fallback. Response body capped at 2 MB (Content-Length check + hard truncation). Extracted content checked for inappropriate material before returning. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
+| POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent to the vision model and never stored. Extracted content is checked for inappropriate material before returning. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
+| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. SSRF-protected (private/loopback addresses blocked). URL string checked for inappropriate content before fetching (percent-encoding decoded first). Fetches with 10-second timeout. First attempts to parse a JSON-LD `Recipe` schema from the page (no API call needed). If not found, strips navigation/noise and sends the page text to the extraction model as a fallback. Response body capped at 2 MB (Content-Length check + hard truncation). Extracted content checked for inappropriate material before returning. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
 
 ### Ingredients
 

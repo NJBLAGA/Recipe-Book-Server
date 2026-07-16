@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const EXTRACTION_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5-20251001';
 
 const extractedIngredientSchema = z.object({
   name: z.string(),
@@ -67,7 +68,7 @@ export async function extractRecipeFromImages(
   }));
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model: EXTRACTION_MODEL,
     max_tokens: 2048,
     system: SYSTEM_PROMPT,
     messages: [
@@ -81,12 +82,12 @@ export async function extractRecipeFromImages(
     ],
   });
 
-  return parseClaudeResponse(message);
+  return parseModelResponse(message);
 }
 
 export async function extractRecipeFromText(text: string): Promise<ExtractedRecipe> {
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model: EXTRACTION_MODEL,
     max_tokens: 2048,
     system: SYSTEM_PROMPT,
     messages: [
@@ -97,14 +98,14 @@ export async function extractRecipeFromText(text: string): Promise<ExtractedReci
     ],
   });
 
-  return parseClaudeResponse(message);
+  return parseModelResponse(message);
 }
 
-function parseClaudeResponse(message: Anthropic.Message): ExtractedRecipe {
+function parseModelResponse(message: Anthropic.Message): ExtractedRecipe {
   const block = message.content[0];
   if (block.type !== 'text') throw new Error('Unexpected response type from extraction model');
 
-  // Strip accidental markdown code fences if Claude adds them despite the prompt
+  // Strip accidental markdown code fences if the model adds them despite the prompt
   const cleaned = block.text.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/, '').trim();
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Could not parse recipe JSON from model response');
