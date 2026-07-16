@@ -17,6 +17,7 @@ router.get('/following', async (req, res) => {
       name: user.name,
       handle: user.handle,
       image: user.image,
+      isPublic: user.isPublic,
       followedAt: follow.createdAt,
     })
     .from(follow)

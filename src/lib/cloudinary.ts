@@ -1,7 +1,14 @@
 import { v2 as cloudinary } from 'cloudinary';
 
+// CLOUDINARY_CLOUD_NAME may have been set to the full URL string
+// (e.g. "CLOUDINARY_URL=cloudinary://key:secret@cloudname") by mistake.
+// Extract just the cloud name if that's the case.
+const rawCloudName = process.env.CLOUDINARY_CLOUD_NAME ?? '';
+const urlMatch = rawCloudName.match(/cloudinary:\/\/[^:]+:[^@]+@([^/\s]+)/);
+const cloudName = urlMatch ? urlMatch[1] : rawCloudName;
+
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  cloud_name: cloudName,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });

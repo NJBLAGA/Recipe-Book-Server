@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { recipeShare, review, notification } from '../schema/social';
 import { recipe, recipeBook, recipeIngredient } from '../schema/recipe';
 import { user } from '../schema/auth';
+import { householdUser, household } from '../schema/household';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
 
@@ -27,13 +28,13 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
-// Copies a recipe (title, description, steps, ingredients) into a target recipe book.
-// Images are not copied — the recipient can add their own.
+// Copies a recipe into a target recipe book with an optional custom title.
 async function copyRecipe(
   tx: any,
   originalRecipeId: string,
   targetRecipeBookId: string,
-  sharedByUserId: string
+  sharedByUserId: string,
+  titleOverride?: string
 ): Promise<string> {
   const [original] = await tx
     .select()
@@ -47,7 +48,7 @@ async function copyRecipe(
     .insert(recipe)
     .values({
       recipeBookId: targetRecipeBookId,
-      title: original.title,
+      title: titleOverride ?? original.title,
       description: original.description,
       baseServings: original.baseServings,
       steps: original.steps,
@@ -130,6 +131,73 @@ router.get('/sent', async (req, res) => {
   res.json(shares);
 });
 
+// POST /api/shares/request — request someone else's recipe
+// Must be before /:id to prevent matching "request" as :id
+router.post('/request', async (req, res) => {
+  const parsed = z.object({
+    recipeId: z.string().uuid(),
+    ownerId: z.string().min(1),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
+
+  const { recipeId, ownerId } = parsed.data;
+
+  if (ownerId === req.user.id) {
+    res.status(400).json({ error: "You can't request your own recipe" });
+    return;
+  }
+
+  // Verify recipe belongs to the owner's household
+  const [r] = await db
+    .select({ id: recipe.id, title: recipe.title })
+    .from(recipe)
+    .innerJoin(recipeBook, eq(recipe.recipeBookId, recipeBook.id))
+    .innerJoin(householdUser, eq(recipeBook.householdId, householdUser.householdId))
+    .where(and(eq(recipe.id, recipeId), eq(householdUser.userId, ownerId)))
+    .limit(1);
+
+  if (!r) { res.status(404).json({ error: 'Recipe not found or does not belong to that user' }); return; }
+
+  // Block requests to household members — they already have access
+  const [ownerHousehold] = await db
+    .select({ householdId: householdUser.householdId })
+    .from(householdUser)
+    .where(eq(householdUser.userId, ownerId))
+    .limit(1);
+
+  if (ownerHousehold && ownerHousehold.householdId === req.householdId) {
+    res.status(400).json({ error: 'This person is in your household — you already share access to their recipes.', sameHousehold: true });
+    return;
+  }
+
+  // Prevent duplicate pending requests
+  const [existing] = await db
+    .select({ id: recipeShare.id })
+    .from(recipeShare)
+    .where(and(
+      eq(recipeShare.recipeId, recipeId),
+      eq(recipeShare.fromUserId, req.user.id),
+      eq(recipeShare.toUserId, ownerId),
+      eq(recipeShare.status, 'REQUESTED'),
+    ))
+    .limit(1);
+
+  if (existing) { res.status(409).json({ error: 'You already have a pending request for this recipe' }); return; }
+
+  const [share] = await db
+    .insert(recipeShare)
+    .values({ recipeId, fromUserId: req.user.id, toUserId: ownerId, status: 'REQUESTED' })
+    .returning();
+
+  await db.insert(notification).values({
+    userId: ownerId,
+    type: 'RECIPE_SHARED',
+    payload: { shareId: share.id, fromUserId: req.user.id, fromUserName: req.user.name, recipeTitle: r.title, isRequest: true },
+  });
+
+  res.status(201).json(share);
+});
+
 // POST /api/shares — share a recipe with another user
 router.post('/', async (req, res) => {
   const parsed = z.object({
@@ -196,6 +264,21 @@ router.post('/', async (req, res) => {
   res.status(201).json(share);
 });
 
+// DELETE /api/shares/:id/cancel-request — requester cancels their own pending REQUESTED share
+router.delete('/:id/cancel-request', async (req, res) => {
+  const [share] = await db
+    .select({ id: recipeShare.id, status: recipeShare.status })
+    .from(recipeShare)
+    .where(and(eq(recipeShare.id, req.params.id), eq(recipeShare.fromUserId, req.user.id)))
+    .limit(1);
+
+  if (!share) { res.status(404).json({ error: 'Request not found' }); return; }
+  if (share.status !== 'REQUESTED') { res.status(400).json({ error: 'This is not a cancellable request' }); return; }
+
+  await db.delete(recipeShare).where(eq(recipeShare.id, share.id));
+  res.json({ message: 'Request cancelled' });
+});
+
 // POST /api/shares/:id/accept — copy recipe into recipient's book
 router.post('/:id/accept', async (req, res) => {
   const [share] = await db
@@ -243,6 +326,34 @@ router.post('/:id/reject', async (req, res) => {
   res.json(updated);
 });
 
+// POST /api/shares/:id/accept-with-name — accept with a custom recipe title
+router.post('/:id/accept-with-name', async (req, res) => {
+  const parsed = z.object({ title: z.string().trim().min(1).max(255) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
+
+  const [share] = await db
+    .select()
+    .from(recipeShare)
+    .where(and(eq(recipeShare.id, req.params.id), eq(recipeShare.toUserId, req.user.id)))
+    .limit(1);
+
+  if (!share) { res.status(404).json({ error: 'Share not found' }); return; }
+  if (share.status !== 'PENDING') { res.status(400).json({ error: 'Share is no longer pending' }); return; }
+  if (!share.recipeId) { res.status(410).json({ error: 'The original recipe has been deleted' }); return; }
+
+  const result = await db.transaction(async (tx) => {
+    const copyId = await copyRecipe(tx, share.recipeId!, req.recipeBookId, share.fromUserId, parsed.data.title);
+    const [updated] = await tx
+      .update(recipeShare)
+      .set({ status: 'ACCEPTED', copiedRecipeId: copyId, updatedAt: new Date() })
+      .where(eq(recipeShare.id, share.id))
+      .returning();
+    return updated;
+  });
+
+  res.json(result);
+});
+
 // POST /api/shares/:id/recopy — re-copy the original after the recipient deleted their copy
 router.post('/:id/recopy', async (req, res) => {
   const [share] = await db
@@ -269,6 +380,80 @@ router.post('/:id/recopy', async (req, res) => {
   });
 
   res.json(result);
+});
+
+// POST /api/shares/:id/recopy-with-name — re-copy with a custom title
+router.post('/:id/recopy-with-name', async (req, res) => {
+  const parsed = z.object({ title: z.string().trim().min(1).max(255) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
+
+  const [share] = await db
+    .select()
+    .from(recipeShare)
+    .where(and(eq(recipeShare.id, req.params.id), eq(recipeShare.toUserId, req.user.id)))
+    .limit(1);
+
+  if (!share) { res.status(404).json({ error: 'Share not found' }); return; }
+  if (share.status !== 'ACCEPTED') { res.status(400).json({ error: 'Can only re-copy an accepted share' }); return; }
+  if (share.copiedRecipeId !== null) { res.status(409).json({ error: 'You still have a copy — delete it first' }); return; }
+  if (!share.recipeId) { res.status(410).json({ error: 'The original recipe has been deleted' }); return; }
+
+  const result = await db.transaction(async (tx) => {
+    const copyId = await copyRecipe(tx, share.recipeId!, req.recipeBookId, share.fromUserId, parsed.data.title);
+    const [updated] = await tx
+      .update(recipeShare)
+      .set({ copiedRecipeId: copyId, updatedAt: new Date() })
+      .where(eq(recipeShare.id, share.id))
+      .returning();
+    return updated;
+  });
+
+  res.json(result);
+});
+
+// POST /api/shares/:id/fulfill-request — owner accepts a recipe request, creates PENDING share
+router.post('/:id/fulfill-request', async (req, res) => {
+  const [share] = await db
+    .select()
+    .from(recipeShare)
+    .where(and(eq(recipeShare.id, req.params.id), eq(recipeShare.toUserId, req.user.id)))
+    .limit(1);
+
+  if (!share) { res.status(404).json({ error: 'Request not found' }); return; }
+  if (share.status !== 'REQUESTED') { res.status(400).json({ error: 'This is not a pending recipe request' }); return; }
+  if (!share.recipeId) { res.status(410).json({ error: 'Recipe no longer available' }); return; }
+
+  await db.transaction(async (tx) => {
+    await tx.insert(recipeShare).values({
+      recipeId: share.recipeId,
+      fromUserId: req.user.id,
+      toUserId: share.fromUserId,
+      status: 'PENDING',
+    });
+    await tx.update(recipeShare)
+      .set({ status: 'ACCEPTED', updatedAt: new Date() })
+      .where(eq(recipeShare.id, share.id));
+  });
+
+  res.json({ message: 'Request fulfilled — recipe shared' });
+});
+
+// POST /api/shares/:id/decline-request — owner declines a recipe request
+router.post('/:id/decline-request', async (req, res) => {
+  const [share] = await db
+    .select({ id: recipeShare.id, status: recipeShare.status })
+    .from(recipeShare)
+    .where(and(eq(recipeShare.id, req.params.id), eq(recipeShare.toUserId, req.user.id)))
+    .limit(1);
+
+  if (!share) { res.status(404).json({ error: 'Request not found' }); return; }
+  if (share.status !== 'REQUESTED') { res.status(400).json({ error: 'This is not a pending recipe request' }); return; }
+
+  await db.update(recipeShare)
+    .set({ status: 'REJECTED', updatedAt: new Date() })
+    .where(eq(recipeShare.id, share.id));
+
+  res.json({ message: 'Request declined' });
 });
 
 // ─── Review routes ────────────────────────────────────────────────────────────

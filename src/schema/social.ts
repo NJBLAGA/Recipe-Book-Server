@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { user } from './auth';
 import { recipe } from './recipe';
 
-export const shareStatusEnum = pgEnum('share_status', ['PENDING', 'ACCEPTED', 'REJECTED']);
+export const shareStatusEnum = pgEnum('share_status', ['PENDING', 'ACCEPTED', 'REJECTED', 'REQUESTED']);
 export const notificationTypeEnum = pgEnum('notification_type', ['RECIPE_SHARED', 'HOUSEHOLD_INVITE', 'JOIN_REQUEST']);
 
 export const recipeShare = pgTable('recipe_share', {
@@ -47,6 +47,15 @@ export const userPinnedRecipe = pgTable('user_pinned_recipe', {
   unique('user_pinned_recipe_unique').on(t.userId, t.recipeId),
   check('position_range_check', sql`${t.position} BETWEEN 1 AND 5`),
 ]);
+
+export const communityPost = pgTable('community_post', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  recipeId: uuid('recipe_id').references(() => recipe.id, { onDelete: 'set null' }),
+  comment: text('comment').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const notification = pgTable('notification', {
   id: uuid('id').primaryKey().defaultRandom(),

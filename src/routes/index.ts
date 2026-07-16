@@ -10,6 +10,7 @@ import pushRouter from './push';
 import notificationsRouter from './notifications';
 import sharesRouter from './shares';
 import followsRouter from './follows';
+import communityRouter from './community';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/push', pushRouter);
 router.use('/notifications', notificationsRouter);
 router.use('/shares', sharesRouter);
 router.use('/follows', followsRouter);
+router.use('/community', communityRouter);
 
 export default router;

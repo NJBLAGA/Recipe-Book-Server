@@ -159,6 +159,60 @@ router.get('/pending', async (req, res) => {
   res.json({ invites, requests });
 });
 
+// GET /api/households/pending/sent — join requests I've sent + invites I've sent from my household
+// Must be before /:id to prevent "pending" matching as :id
+router.get('/pending/sent', async (req, res) => {
+  const [joinedUser, joinedUser2, joinedHousehold] = [
+    user.name,
+    user.handle,
+    household.name,
+  ];
+
+  const sentRequests = await db
+    .select({
+      id: householdJoinRequest.id,
+      householdId: householdJoinRequest.householdId,
+      householdName: household.name,
+      type: householdJoinRequest.type,
+      status: householdJoinRequest.status,
+      createdAt: householdJoinRequest.createdAt,
+    })
+    .from(householdJoinRequest)
+    .innerJoin(household, eq(householdJoinRequest.householdId, household.id))
+    .where(
+      and(
+        eq(householdJoinRequest.initiatedByUserId, req.user.id),
+        eq(householdJoinRequest.type, 'REQUEST'),
+        eq(householdJoinRequest.status, 'PENDING'),
+      )
+    );
+
+  const sentInvites = await db
+    .select({
+      id: householdJoinRequest.id,
+      householdId: householdJoinRequest.householdId,
+      householdName: household.name,
+      inviteeName: user.name,
+      inviteeHandle: user.handle,
+      inviteeImage: user.image,
+      type: householdJoinRequest.type,
+      status: householdJoinRequest.status,
+      createdAt: householdJoinRequest.createdAt,
+    })
+    .from(householdJoinRequest)
+    .innerJoin(household, eq(householdJoinRequest.householdId, household.id))
+    .innerJoin(user, eq(householdJoinRequest.userId, user.id))
+    .where(
+      and(
+        eq(householdJoinRequest.initiatedByUserId, req.user.id),
+        eq(householdJoinRequest.type, 'INVITE'),
+        eq(householdJoinRequest.status, 'PENDING'),
+      )
+    );
+
+  res.json({ sentRequests, sentInvites });
+});
+
 // POST /api/households/:id/invites — send an invite to a user (must be a household member)
 router.post('/:id/invites', async (req, res) => {
   const { id: householdId } = req.params;

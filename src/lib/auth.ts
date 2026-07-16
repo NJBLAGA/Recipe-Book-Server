@@ -41,7 +41,13 @@ function normalizeEmail(raw: string): string {
 export const auth = betterAuth({
   secret: process.env.BETTER_AUTH_SECRET!,
   baseURL: process.env.BETTER_AUTH_URL!,
-  trustedOrigins: [process.env.CLIENT_URL ?? 'http://localhost:5173'],
+  trustedOrigins: [
+    process.env.CLIENT_URL ?? 'http://localhost:5173',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:5175',
+    'http://localhost:5176',
+  ],
 
   database: drizzleAdapter(db, {
     provider: 'pg',

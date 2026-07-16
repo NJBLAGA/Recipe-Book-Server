@@ -22,6 +22,20 @@
       "when": 1784089968688,
       "tag": "0002_faithful_loa",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784194986892,
+      "tag": "0003_add_is_public_and_requested_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784196672139,
+      "tag": "0004_chilly_pepper_potts",
+      "breakpoints": true
     }
   ]
 }

@@ -457,6 +457,7 @@ router.get('/pins', async (req, res) => {
       recipeId: userPinnedRecipe.recipeId,
       recipeTitle: recipe.title,
       recipeDescription: recipe.description,
+      recipeImage: sql<string | null>`(SELECT url FROM recipe_image WHERE recipe_id = ${recipe.id} ORDER BY sort_order ASC LIMIT 1)`,
     })
     .from(userPinnedRecipe)
     .leftJoin(recipe, eq(userPinnedRecipe.recipeId, recipe.id))
@@ -626,6 +627,7 @@ router.get('/recipes', async (req, res) => {
       baseServings: recipe.baseServings,
       categoryId: recipe.categoryId,
       categoryName: recipeCategory.name,
+      image: sql<string | null>`(SELECT url FROM recipe_image WHERE recipe_id = ${recipe.id} ORDER BY sort_order ASC LIMIT 1)`,
       createdAt: recipe.createdAt,
       updatedAt: recipe.updatedAt,
     })
