@@ -51,23 +51,35 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: true,
-    sendResetPasswordEmail: async (opts: { user: { email: string }; url: string }) => {
+    sendResetPassword: async ({ user, url }: { user: { email: string }; url: string; token: string }) => {
       await sendEmail({
-        to: opts.user.email,
+        to: user.email,
         subject: 'Reset your password',
         html: `<p>Click the link below to reset your password. This link expires in 1 hour.</p>
-               <a href="${opts.url}">Reset password</a>`,
+               <a href="${url}">Reset password</a>`,
+      });
+    },
+    onPasswordReset: async ({ user }: { user: { email: string } }) => {
+      await sendEmail({
+        to: user.email,
+        subject: 'Your password has been changed',
+        html: `<p>Your password was successfully reset. If you did not make this change, contact support immediately.</p>`,
       });
     },
   },
 
   emailVerification: {
     sendVerificationEmail: async (opts: { user: { email: string }; url: string }) => {
+      const verificationUrl = new URL(opts.url);
+      verificationUrl.searchParams.set(
+        'callbackURL',
+        `${process.env.CLIENT_URL ?? 'http://localhost:5173'}/sign-in?verified=true`,
+      );
       await sendEmail({
         to: opts.user.email,
         subject: 'Verify your email address',
         html: `<p>Welcome! Click the link below to verify your email address.</p>
-               <a href="${opts.url}">Verify email</a>`,
+               <a href="${verificationUrl.toString()}">Verify email</a>`,
       });
     },
   },
@@ -87,12 +99,17 @@ export const auth = betterAuth({
       // delivery are caught by better-auth's runInBackgroundOrAwait and do not
       // fail the request.
       sendChangeEmailConfirmation: async ({ user: u, newEmail, url }) => {
+        const confirmUrl = new URL(url);
+        confirmUrl.searchParams.set(
+          'callbackURL',
+          `${process.env.CLIENT_URL ?? 'http://localhost:5173'}/sign-in`,
+        );
         await sendEmail({
           to: u.email,
           subject: 'Confirm your email change',
           html: `<p>You requested to change your email to <strong>${newEmail}</strong>.</p>
                  <p>Click the link below to confirm. If you did not request this, ignore this email.</p>
-                 <a href="${url}">Confirm email change</a>`,
+                 <a href="${confirmUrl.toString()}">Confirm email change</a>`,
         });
       },
     },
