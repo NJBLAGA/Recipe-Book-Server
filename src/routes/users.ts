@@ -5,7 +5,8 @@ import { db } from '../db';
 import { user } from '../schema/auth';
 import { household, householdUser } from '../schema/household';
 import { userPinnedRecipe } from '../schema/social';
-import { recipe, recipeImage } from '../schema/recipe';
+import { recipe, recipeCategory, recipeImage, recipeIngredient } from '../schema/recipe';
+import { ingredient } from '../schema/ingredient';
 import { recipeShare } from '../schema/social';
 import { review } from '../schema/social';
 import { requireAuth } from '../middleware/requireAuth';
@@ -232,6 +233,65 @@ router.get('/:handle', async (req, res) => {
   }));
 
   res.json({ ...profile, pins: enrichedPins });
+});
+
+// GET /api/users/:handle/recipes/:recipeId — full recipe detail for a pinned recipe on a public profile
+router.get('/:handle/recipes/:recipeId', async (req, res) => {
+  const [profileUser] = await db
+    .select({ id: user.id, isPublic: user.isPublic })
+    .from(user)
+    .where(eq(user.handle, req.params.handle))
+    .limit(1);
+
+  if (!profileUser) { res.status(404).json({ error: 'User not found' }); return; }
+  if (!profileUser.isPublic) { res.status(403).json({ error: 'Profile is private' }); return; }
+
+  // Verify this recipe is actually pinned by the user (so only pinned recipes are publicly viewable)
+  const [pin] = await db
+    .select({ recipeId: userPinnedRecipe.recipeId })
+    .from(userPinnedRecipe)
+    .where(and(eq(userPinnedRecipe.userId, profileUser.id), eq(userPinnedRecipe.recipeId, req.params.recipeId)))
+    .limit(1);
+
+  if (!pin) { res.status(404).json({ error: 'Recipe not found in this user\'s pins' }); return; }
+
+  const [rec] = await db
+    .select({
+      id: recipe.id,
+      title: recipe.title,
+      description: recipe.description,
+      baseServings: recipe.baseServings,
+      steps: recipe.steps,
+      categoryName: recipeCategory.name,
+    })
+    .from(recipe)
+    .leftJoin(recipeCategory, eq(recipe.categoryId, recipeCategory.id))
+    .where(eq(recipe.id, req.params.recipeId))
+    .limit(1);
+
+  if (!rec) { res.status(404).json({ error: 'Recipe not found' }); return; }
+
+  const ingredients = await db
+    .select({
+      id: recipeIngredient.id,
+      name: ingredient.name,
+      quantity: recipeIngredient.quantity,
+      unit: recipeIngredient.unit,
+      note: recipeIngredient.note,
+      sortOrder: recipeIngredient.sortOrder,
+    })
+    .from(recipeIngredient)
+    .innerJoin(ingredient, eq(recipeIngredient.ingredientId, ingredient.id))
+    .where(eq(recipeIngredient.recipeId, rec.id))
+    .orderBy(asc(recipeIngredient.sortOrder));
+
+  const images = await db
+    .select({ url: recipeImage.url, sortOrder: recipeImage.sortOrder })
+    .from(recipeImage)
+    .where(eq(recipeImage.recipeId, rec.id))
+    .orderBy(asc(recipeImage.sortOrder));
+
+  res.json({ ...rec, ingredients, images });
 });
 
 export default router;

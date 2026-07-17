@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, asc, desc, eq, gte, inArray, or } from 'drizzle-orm';
+import { and, asc, avg, count, desc, eq, gte, inArray, isNotNull, lte, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { communityPost, follow, recipeShare, review } from '../schema/social';
@@ -13,23 +13,17 @@ const router = Router();
 router.use(requireAuth);
 
 // ─── GET /api/community/posts — public feed ───────────────────────────────────
-// Optional query params: userId (filter by poster), since (24h|1w|1m|all)
+// Optional query params: userId, from (ISO), to (ISO)
 router.get('/posts', async (req, res) => {
   const filterUserId = typeof req.query.userId === 'string' ? req.query.userId : null;
-  const since = typeof req.query.since === 'string' ? req.query.since : 'all';
-
-  const sinceDate: Date | null = (() => {
-    const now = new Date();
-    if (since === '24h') return new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    if (since === '1w') return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    if (since === '1m') return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    return null;
-  })();
+  const fromParam = typeof req.query.from === 'string' ? new Date(req.query.from) : null;
+  const toParam = typeof req.query.to === 'string' ? new Date(req.query.to) : null;
 
   const baseWhere = or(eq(user.isPublic, true), eq(communityPost.userId, req.user.id))!;
   const conditions = [baseWhere];
   if (filterUserId) conditions.push(eq(communityPost.userId, filterUserId));
-  if (sinceDate) conditions.push(gte(communityPost.createdAt, sinceDate));
+  if (fromParam && !isNaN(fromParam.getTime())) conditions.push(gte(communityPost.createdAt, fromParam));
+  if (toParam && !isNaN(toParam.getTime())) conditions.push(lte(communityPost.createdAt, toParam));
 
   const rows = await db
     .select({
@@ -49,7 +43,7 @@ router.get('/posts', async (req, res) => {
     .leftJoin(recipe, eq(communityPost.recipeId, recipe.id))
     .where(and(...conditions))
     .orderBy(desc(communityPost.createdAt))
-    .limit(200);
+    .limit(500);
 
   if (rows.length === 0) { res.json([]); return; }
 
@@ -66,6 +60,23 @@ router.get('/posts', async (req, res) => {
     if (!imageMap.has(img.recipeId)) imageMap.set(img.recipeId, img.url);
   }
 
+  const reviewStats = recipeIds.length > 0
+    ? await db
+        .select({
+          recipeId: recipeShare.recipeId,
+          reviewCount: count(review.id),
+          avgRating: avg(review.rating),
+        })
+        .from(review)
+        .innerJoin(recipeShare, eq(review.shareId, recipeShare.id))
+        .where(and(inArray(recipeShare.recipeId, recipeIds), isNotNull(recipeShare.recipeId)))
+        .groupBy(recipeShare.recipeId)
+    : [];
+  const reviewMap = new Map<string, { count: number; avg: number | null }>();
+  for (const s of reviewStats) {
+    if (s.recipeId) reviewMap.set(s.recipeId, { count: Number(s.reviewCount), avg: s.avgRating != null ? Number(s.avgRating) : null });
+  }
+
   const posterIds = [...new Set(rows.map((r) => r.userId))];
   const followRows = posterIds.length > 0
     ? await db
@@ -75,11 +86,29 @@ router.get('/posts', async (req, res) => {
     : [];
   const followingSet = new Set(followRows.map((f) => f.followingId));
 
+  const viewerHouseholdRow = await db
+    .select({ householdId: householdUser.householdId })
+    .from(householdUser)
+    .where(eq(householdUser.userId, req.user.id))
+    .limit(1);
+  const viewerHouseholdId = viewerHouseholdRow[0]?.householdId ?? null;
+
+  const posterHouseholdRows = posterIds.length > 0
+    ? await db
+        .select({ userId: householdUser.userId, householdId: householdUser.householdId })
+        .from(householdUser)
+        .where(inArray(householdUser.userId, posterIds))
+    : [];
+  const posterHouseholdMap = new Map(posterHouseholdRows.map((r) => [r.userId, r.householdId]));
+
   res.json(rows.map((row) => ({
     ...row,
     recipeImage: row.recipeId ? (imageMap.get(row.recipeId) ?? null) : null,
+    reviewCount: row.recipeId ? (reviewMap.get(row.recipeId)?.count ?? 0) : 0,
+    recipeAvgRating: row.recipeId ? (reviewMap.get(row.recipeId)?.avg ?? null) : null,
     isFollowing: followingSet.has(row.userId),
     isOwnPost: row.userId === req.user.id,
+    sameHousehold: viewerHouseholdId !== null && posterHouseholdMap.get(row.userId) === viewerHouseholdId,
   })));
 });
 
@@ -128,13 +157,50 @@ router.get('/posts/following', async (req, res) => {
     if (!imageMap.has(img.recipeId)) imageMap.set(img.recipeId, img.url);
   }
 
+  const reviewStats = recipeIds.length > 0
+    ? await db
+        .select({
+          recipeId: recipeShare.recipeId,
+          reviewCount: count(review.id),
+          avgRating: avg(review.rating),
+        })
+        .from(review)
+        .innerJoin(recipeShare, eq(review.shareId, recipeShare.id))
+        .where(and(inArray(recipeShare.recipeId, recipeIds), isNotNull(recipeShare.recipeId)))
+        .groupBy(recipeShare.recipeId)
+    : [];
+  const reviewMap = new Map<string, { count: number; avg: number | null }>();
+  for (const s of reviewStats) {
+    if (s.recipeId) reviewMap.set(s.recipeId, { count: Number(s.reviewCount), avg: s.avgRating != null ? Number(s.avgRating) : null });
+  }
+
+  const viewerHouseholdRow = await db
+    .select({ householdId: householdUser.householdId })
+    .from(householdUser)
+    .where(eq(householdUser.userId, req.user.id))
+    .limit(1);
+  const viewerHouseholdId = viewerHouseholdRow[0]?.householdId ?? null;
+
+  const posterIds = [...new Set(rows.map((r) => r.userId))];
+  const posterHouseholdRows = posterIds.length > 0
+    ? await db
+        .select({ userId: householdUser.userId, householdId: householdUser.householdId })
+        .from(householdUser)
+        .where(inArray(householdUser.userId, posterIds))
+    : [];
+  const posterHouseholdMap = new Map(posterHouseholdRows.map((r) => [r.userId, r.householdId]));
+
   res.json(rows.map((row) => ({
     ...row,
     userName: row.userIsPublic ? row.userName : null,
     userHandle: row.userIsPublic ? row.userHandle : null,
     userImage: row.userIsPublic ? row.userImage : null,
     recipeImage: row.recipeId ? (imageMap.get(row.recipeId) ?? null) : null,
+    reviewCount: row.recipeId ? (reviewMap.get(row.recipeId)?.count ?? 0) : 0,
+    recipeAvgRating: row.recipeId ? (reviewMap.get(row.recipeId)?.avg ?? null) : null,
     isOwnPost: row.userId === req.user.id,
+    isFollowing: true,
+    sameHousehold: viewerHouseholdId !== null && posterHouseholdMap.get(row.userId) === viewerHouseholdId,
   })));
 });
 
@@ -205,6 +271,7 @@ router.get('/posts/:postId/recipe/reviews', async (req, res) => {
       rating: review.rating,
       comment: review.comment,
       updatedAt: review.updatedAt,
+      reviewerId: recipeShare.toUserId,
       reviewerName: user.name,
       reviewerHandle: user.handle,
       reviewerImage: user.image,

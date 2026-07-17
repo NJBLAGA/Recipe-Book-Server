@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { recipeShare, review, notification } from '../schema/social';
@@ -88,6 +88,8 @@ router.get('/received', async (req, res) => {
       id: recipeShare.id,
       recipeId: recipeShare.recipeId,
       recipeTitle: recipe.title,
+      recipeDescription: recipe.description,
+      recipeImage: sql<string | null>`(SELECT url FROM recipe_image WHERE recipe_id = ${recipeShare.recipeId} ORDER BY sort_order ASC LIMIT 1)`,
       fromUserId: recipeShare.fromUserId,
       fromUserName: user.name,
       fromUserHandle: user.handle,
@@ -113,6 +115,8 @@ router.get('/sent', async (req, res) => {
       id: recipeShare.id,
       recipeId: recipeShare.recipeId,
       recipeTitle: recipe.title,
+      recipeDescription: recipe.description,
+      recipeImage: sql<string | null>`(SELECT url FROM recipe_image WHERE recipe_id = ${recipeShare.recipeId} ORDER BY sort_order ASC LIMIT 1)`,
       toUserId: recipeShare.toUserId,
       toUserName: user.name,
       toUserHandle: user.handle,

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { db } from '../db';
 import { follow } from '../schema/social';
 import { user } from '../schema/auth';
+import { householdUser } from '../schema/household';
 import { requireAuth } from '../middleware/requireAuth';
 
 const router = Router();
@@ -19,9 +20,11 @@ router.get('/following', async (req, res) => {
       image: user.image,
       isPublic: user.isPublic,
       followedAt: follow.createdAt,
+      householdId: householdUser.householdId,
     })
     .from(follow)
     .innerJoin(user, eq(follow.followingId, user.id))
+    .leftJoin(householdUser, eq(user.id, householdUser.userId))
     .where(eq(follow.followerId, req.user.id))
     .orderBy(asc(user.name))
     .limit(500);
