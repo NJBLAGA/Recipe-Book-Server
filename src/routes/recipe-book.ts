@@ -98,25 +98,30 @@ function parseIngredientString(raw: string): ExtractedIngredient {
   return { name: s, quantity: null, unit: null, note: s };
 }
 
+function flattenHowToSteps(raw: unknown): string[] {
+  if (typeof raw === 'string') return raw ? [raw] : [];
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      if (item) out.push(item);
+    } else if (item && typeof item === 'object') {
+      const s = item as Record<string, unknown>;
+      if (s['@type'] === 'HowToSection' && Array.isArray(s.itemListElement)) {
+        out.push(...flattenHowToSteps(s.itemListElement));
+      } else if (typeof s.text === 'string' && s.text) {
+        out.push(s.text);
+      } else if (typeof s.name === 'string' && s.name) {
+        out.push(s.name);
+      }
+    }
+  }
+  return out;
+}
+
 function mapJsonLdToRecipe(schema: Record<string, unknown>): ExtractedRecipe {
   const ingredients = (schema.recipeIngredient as string[] ?? []).map(parseIngredientString);
-
-  let steps: string[] = [];
-  const raw = schema.recipeInstructions;
-  if (Array.isArray(raw)) {
-    steps = raw
-      .map((step: unknown) => {
-        if (typeof step === 'string') return step;
-        if (step && typeof step === 'object') {
-          const s = step as Record<string, unknown>;
-          return typeof s.text === 'string' ? s.text : typeof s.name === 'string' ? s.name : '';
-        }
-        return '';
-      })
-      .filter(Boolean);
-  } else if (typeof raw === 'string') {
-    steps = [raw];
-  }
+  const steps = flattenHowToSteps(schema.recipeInstructions);
 
   const yieldRaw = schema.recipeYield;
   let baseServings = 4;
@@ -189,8 +194,35 @@ router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) =
     extracted = await extractRecipeFromImages(
       files.map((f) => ({ buffer: f.buffer, mimetype: f.mimetype }))
     );
-  } catch {
+  } catch (err) {
+    console.error('[scan] Extraction failed:', err);
     res.status(422).json({ error: 'Could not extract a recipe from the provided image(s)' });
+    return;
+  }
+
+  if (!recipeIsClean(extracted)) {
+    res.status(422).json({ error: 'Extracted recipe contains inappropriate content' });
+    return;
+  }
+
+  res.json(extracted);
+});
+
+// POST /api/recipe-book/extract-text
+// Accepts raw pasted text and extracts a recipe via the text model.
+router.post('/extract-text', async (req, res) => {
+  const parsed = z.object({ text: z.string().min(1, 'Text is required') }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0].message });
+    return;
+  }
+
+  let extracted: ExtractedRecipe;
+  try {
+    extracted = await extractRecipeFromText(parsed.data.text);
+  } catch (err) {
+    console.error('[extract-text] Extraction failed:', err);
+    res.status(422).json({ error: 'Could not extract a recipe from the provided text' });
     return;
   }
 
@@ -254,8 +286,12 @@ router.post('/import-url', async (req, res) => {
   let html: string;
   try {
     const response = await fetch(parsed.data.url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeImporter/1.0)' },
-      signal: AbortSignal.timeout(10_000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(12_000),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -299,12 +335,22 @@ router.post('/import-url', async (req, res) => {
     if (extracted) return;
     try {
       const data = JSON.parse($(el).html() ?? '');
-      const schemas: unknown[] = Array.isArray(data) ? data : [data];
-      const recipeSchema = schemas.find((s): s is Record<string, unknown> => {
+      // Flatten top-level array, top-level object, and @graph containers
+      const topLevel: unknown[] = Array.isArray(data) ? data : [data];
+      const schemas: unknown[] = [];
+      for (const item of topLevel) {
+        if (item && typeof item === 'object') {
+          const g = (item as Record<string, unknown>)['@graph'];
+          if (Array.isArray(g)) schemas.push(...g);
+          else schemas.push(item);
+        }
+      }
+      const isRecipeType = (s: unknown): s is Record<string, unknown> => {
         if (!s || typeof s !== 'object') return false;
         const t = (s as Record<string, unknown>)['@type'];
         return t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'));
-      });
+      };
+      const recipeSchema = schemas.find(isRecipeType);
       if (recipeSchema) extracted = mapJsonLdToRecipe(recipeSchema);
     } catch {
       // Malformed JSON-LD — skip this block
@@ -619,7 +665,7 @@ router.get('/recipes', async (req, res) => {
   if (categoryId) conditions.push(eq(recipe.categoryId, categoryId));
   if (search) conditions.push(ilike(recipe.title, `%${search}%`));
 
-  const recipes = await db
+  const rows = await db
     .select({
       id: recipe.id,
       title: recipe.title,
@@ -627,7 +673,6 @@ router.get('/recipes', async (req, res) => {
       baseServings: recipe.baseServings,
       categoryId: recipe.categoryId,
       categoryName: recipeCategory.name,
-      image: sql<string | null>`(SELECT url FROM recipe_image WHERE recipe_id = ${recipe.id} ORDER BY sort_order ASC LIMIT 1)`,
       createdAt: recipe.createdAt,
       updatedAt: recipe.updatedAt,
     })
@@ -636,7 +681,21 @@ router.get('/recipes', async (req, res) => {
     .where(and(...conditions))
     .orderBy(asc(recipe.title));
 
-  res.json(recipes);
+  const recipeIds = rows.map((r) => r.id);
+  const imgs = recipeIds.length > 0
+    ? await db
+        .select({ recipeId: recipeImage.recipeId, url: recipeImage.url })
+        .from(recipeImage)
+        .where(inArray(recipeImage.recipeId, recipeIds))
+        .orderBy(asc(recipeImage.sortOrder))
+    : [];
+  const imageMap = new Map<string, string[]>();
+  for (const img of imgs) {
+    const existing = imageMap.get(img.recipeId) ?? [];
+    imageMap.set(img.recipeId, [...existing, img.url]);
+  }
+
+  res.json(rows.map((r) => ({ ...r, images: imageMap.get(r.id) ?? [] })));
 });
 
 // POST /api/recipe-book/recipes

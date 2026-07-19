@@ -33,6 +33,7 @@ const fillLevelSchema = z.union([
 
 const pendingChangesSchema = z.object({
   ticked: z.array(z.string().uuid()).default([]),
+  tickedSteps: z.array(z.number().int().min(0)).default([]),
   pantryChanges: z.array(z.object({
     batchId: z.string().uuid(),
     newFillLevel: fillLevelSchema,
@@ -125,7 +126,7 @@ router.post('/', async (req, res) => {
       userId: req.user.id,
       recipeId: parsed.data.recipeId,
       status: 'IN_PROGRESS',
-      pendingChanges: { ticked: [], pantryChanges: [], extraChanges: [] },
+      pendingChanges: { ticked: [], tickedSteps: [], pantryChanges: [], extraChanges: [] },
     })
     .returning();
 

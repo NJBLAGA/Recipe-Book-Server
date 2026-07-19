@@ -55,9 +55,10 @@ router.get('/posts', async (req, res) => {
         .where(inArray(recipeImage.recipeId, recipeIds))
         .orderBy(asc(recipeImage.sortOrder))
     : [];
-  const imageMap = new Map<string, string>();
+  const imageMap = new Map<string, string[]>();
   for (const img of images) {
-    if (!imageMap.has(img.recipeId)) imageMap.set(img.recipeId, img.url);
+    const existing = imageMap.get(img.recipeId) ?? [];
+    imageMap.set(img.recipeId, [...existing, img.url]);
   }
 
   const reviewStats = recipeIds.length > 0
@@ -103,7 +104,7 @@ router.get('/posts', async (req, res) => {
 
   res.json(rows.map((row) => ({
     ...row,
-    recipeImage: row.recipeId ? (imageMap.get(row.recipeId) ?? null) : null,
+    recipeImages: row.recipeId ? (imageMap.get(row.recipeId) ?? []) : [],
     reviewCount: row.recipeId ? (reviewMap.get(row.recipeId)?.count ?? 0) : 0,
     recipeAvgRating: row.recipeId ? (reviewMap.get(row.recipeId)?.avg ?? null) : null,
     isFollowing: followingSet.has(row.userId),
@@ -152,9 +153,10 @@ router.get('/posts/following', async (req, res) => {
         .where(inArray(recipeImage.recipeId, recipeIds))
         .orderBy(asc(recipeImage.sortOrder))
     : [];
-  const imageMap = new Map<string, string>();
+  const imageMap = new Map<string, string[]>();
   for (const img of images) {
-    if (!imageMap.has(img.recipeId)) imageMap.set(img.recipeId, img.url);
+    const existing = imageMap.get(img.recipeId) ?? [];
+    imageMap.set(img.recipeId, [...existing, img.url]);
   }
 
   const reviewStats = recipeIds.length > 0
@@ -195,7 +197,7 @@ router.get('/posts/following', async (req, res) => {
     userName: row.userIsPublic ? row.userName : null,
     userHandle: row.userIsPublic ? row.userHandle : null,
     userImage: row.userIsPublic ? row.userImage : null,
-    recipeImage: row.recipeId ? (imageMap.get(row.recipeId) ?? null) : null,
+    recipeImages: row.recipeId ? (imageMap.get(row.recipeId) ?? []) : [],
     reviewCount: row.recipeId ? (reviewMap.get(row.recipeId)?.count ?? 0) : 0,
     recipeAvgRating: row.recipeId ? (reviewMap.get(row.recipeId)?.avg ?? null) : null,
     isOwnPost: row.userId === req.user.id,

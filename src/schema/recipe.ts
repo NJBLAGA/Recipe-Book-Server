@@ -59,6 +59,7 @@ export const recipeCook = pgTable('recipe_cook', {
   status: cookStatusEnum('status').notNull().default('IN_PROGRESS'),
   pendingChanges: jsonb('pending_changes').$type<{
     ticked: string[];
+    tickedSteps: number[];
     pantryChanges: { batchId: string; newFillLevel: number }[];
     extraChanges: { batchId: string; newFillLevel: number }[];
   }>(),
