@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { pantry, pantryCategory, pantryItem, pantryBatch, pantryItemImage } from '../schema/pantry';
+import { pantry, pantryCategory, pantryItem, pantryItemImage } from '../schema/pantry';
 import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
@@ -31,22 +31,21 @@ const categorySchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(100),
 });
 
-const fillLevelSchema = z.union([
-  z.literal(0), z.literal(25), z.literal(50), z.literal(75), z.literal(100),
-]);
-
 const createItemSchema = z.object({
-  ingredientName: z.string().trim().min(1, 'Ingredient name is required'),
-  categoryId: z.string().uuid().nullable().optional(),
-  fillLevel: fillLevelSchema.default(100),
+  name: z.string().trim().min(1, 'Ingredient name is required'),
+  categoryId: z.string().uuid({ message: 'Category is required' }),
+  inStock: z.boolean().default(true),
+  quantity: z.number().int().min(1).max(999).nullable().optional(),
+  unit: z.string().trim().max(50).nullable().optional(),
+  notes: z.string().trim().max(500).nullable().optional(),
 });
 
 const updateItemSchema = z.object({
   categoryId: z.string().uuid().nullable().optional(),
-});
-
-const batchSchema = z.object({
-  fillLevel: fillLevelSchema,
+  inStock: z.boolean().optional(),
+  quantity: z.number().int().min(1).max(999).nullable().optional(),
+  unit: z.string().trim().max(50).nullable().optional(),
+  notes: z.string().trim().max(500).nullable().optional(),
 });
 
 // ─── Category routes ──────────────────────────────────────────────────────────
@@ -105,6 +104,19 @@ router.delete('/categories/:id', async (req, res) => {
     .limit(1);
   if (!cat) { res.status(404).json({ error: 'Category not found' }); return; }
 
+  const parsed = z.object({ targetCategoryId: z.string().uuid().optional() }).safeParse(req.body);
+  const targetCategoryId = parsed.success ? parsed.data.targetCategoryId : undefined;
+
+  if (targetCategoryId) {
+    const [target] = await db
+      .select({ id: pantryCategory.id })
+      .from(pantryCategory)
+      .where(and(eq(pantryCategory.id, targetCategoryId), eq(pantryCategory.pantryId, req.pantryId)))
+      .limit(1);
+    if (!target) { res.status(400).json({ error: 'Target category not found' }); return; }
+    await db.update(pantryItem).set({ categoryId: targetCategoryId }).where(eq(pantryItem.categoryId, req.params.id));
+  }
+
   await db.delete(pantryCategory).where(eq(pantryCategory.id, req.params.id));
   res.json({ message: 'Category deleted' });
 });
@@ -124,6 +136,10 @@ router.get('/items', async (req, res) => {
       ingredientName: ingredient.name,
       categoryId: pantryItem.categoryId,
       categoryName: pantryCategory.name,
+      inStock: pantryItem.inStock,
+      quantity: pantryItem.quantity,
+      unit: pantryItem.unit,
+      notes: pantryItem.notes,
       createdAt: pantryItem.createdAt,
     })
     .from(pantryItem)
@@ -134,21 +150,21 @@ router.get('/items', async (req, res) => {
 
   if (items.length === 0) { res.json([]); return; }
 
-  const itemIds = items.map(i => i.id);
-  const batches = await db
-    .select()
-    .from(pantryBatch)
-    .where(inArray(pantryBatch.pantryItemId, itemIds));
+  const itemIds = items.map((i) => i.id);
+  const images = await db
+    .select({ id: pantryItemImage.id, url: pantryItemImage.url, sortOrder: pantryItemImage.sortOrder, pantryItemId: pantryItemImage.pantryItemId })
+    .from(pantryItemImage)
+    .where(inArray(pantryItemImage.pantryItemId, itemIds))
+    .orderBy(asc(pantryItemImage.sortOrder));
 
-  const batchesByItemId = batches.reduce<Record<string, typeof batches>>((acc, b) => {
-    (acc[b.pantryItemId] ??= []).push(b);
+  const imagesByItemId = images.reduce<Record<string, typeof images>>((acc, img) => {
+    (acc[img.pantryItemId] ??= []).push(img);
     return acc;
   }, {});
 
-  const result = items.map(item => ({
+  const result = items.map((item) => ({
     ...item,
-    batches: batchesByItemId[item.id] ?? [],
-    effectiveStock: (batchesByItemId[item.id] ?? []).reduce((sum, b) => sum + b.fillLevel, 0),
+    images: (imagesByItemId[item.id] ?? []).map((img) => ({ id: img.id, url: img.url, sortOrder: img.sortOrder })),
   }));
 
   res.json(result);
@@ -170,7 +186,7 @@ router.post('/items', async (req, res) => {
   let result: Record<string, unknown> | null = null;
   try {
     result = await db.transaction(async (tx) => {
-      const ingredientId = await findOrCreateIngredient(tx, parsed.data.ingredientName);
+      const ingredientId = await findOrCreateIngredient(tx, parsed.data.name);
 
       const [existingItem] = await tx
         .select({ id: pantryItem.id })
@@ -181,15 +197,18 @@ router.post('/items', async (req, res) => {
 
       const [item] = await tx
         .insert(pantryItem)
-        .values({ pantryId: req.pantryId, ingredientId, categoryId: parsed.data.categoryId ?? null })
+        .values({
+          pantryId: req.pantryId,
+          ingredientId,
+          categoryId: parsed.data.categoryId,
+          inStock: parsed.data.inStock,
+          quantity: parsed.data.quantity ?? null,
+          unit: parsed.data.unit ?? null,
+          notes: parsed.data.notes ?? null,
+        })
         .returning();
 
-      const [batch] = await tx
-        .insert(pantryBatch)
-        .values({ pantryItemId: item.id, fillLevel: parsed.data.fillLevel })
-        .returning();
-
-      return { ...item, batches: [batch], effectiveStock: batch.fillLevel };
+      return { ...item, ingredientName: parsed.data.name, categoryName: null, images: [] };
     });
   } catch (e: any) {
     if (e?.code === '23505') { res.status(409).json({ error: 'This ingredient is already in your pantry' }); return; }
@@ -209,6 +228,10 @@ router.get('/items/:id', async (req, res) => {
       ingredientName: ingredient.name,
       categoryId: pantryItem.categoryId,
       categoryName: pantryCategory.name,
+      inStock: pantryItem.inStock,
+      quantity: pantryItem.quantity,
+      unit: pantryItem.unit,
+      notes: pantryItem.notes,
       createdAt: pantryItem.createdAt,
       updatedAt: pantryItem.updatedAt,
     })
@@ -220,21 +243,13 @@ router.get('/items/:id', async (req, res) => {
 
   if (!item) { res.status(404).json({ error: 'Item not found' }); return; }
 
-  const [batches, images] = await Promise.all([
-    db.select().from(pantryBatch).where(eq(pantryBatch.pantryItemId, item.id)),
-    db
-      .select({ id: pantryItemImage.id, url: pantryItemImage.url, sortOrder: pantryItemImage.sortOrder })
-      .from(pantryItemImage)
-      .where(eq(pantryItemImage.pantryItemId, item.id))
-      .orderBy(asc(pantryItemImage.sortOrder)),
-  ]);
+  const images = await db
+    .select({ id: pantryItemImage.id, url: pantryItemImage.url, sortOrder: pantryItemImage.sortOrder })
+    .from(pantryItemImage)
+    .where(eq(pantryItemImage.pantryItemId, item.id))
+    .orderBy(asc(pantryItemImage.sortOrder));
 
-  res.json({
-    ...item,
-    batches,
-    effectiveStock: batches.reduce((sum, b) => sum + b.fillLevel, 0),
-    images,
-  });
+  res.json({ ...item, images });
 });
 
 router.patch('/items/:id', async (req, res) => {
@@ -257,12 +272,16 @@ router.patch('/items/:id', async (req, res) => {
     if (!cat) { res.status(400).json({ error: 'Invalid category' }); return; }
   }
 
+  const updateFields: Record<string, unknown> = { updatedAt: new Date() };
+  if (parsed.data.categoryId !== undefined) updateFields.categoryId = parsed.data.categoryId;
+  if (parsed.data.inStock !== undefined) updateFields.inStock = parsed.data.inStock;
+  if (parsed.data.quantity !== undefined) updateFields.quantity = parsed.data.quantity;
+  if (parsed.data.unit !== undefined) updateFields.unit = parsed.data.unit;
+  if (parsed.data.notes !== undefined) updateFields.notes = parsed.data.notes;
+
   const [updated] = await db
     .update(pantryItem)
-    .set({
-      ...(parsed.data.categoryId !== undefined && { categoryId: parsed.data.categoryId }),
-      updatedAt: new Date(),
-    })
+    .set(updateFields)
     .where(eq(pantryItem.id, req.params.id))
     .returning();
   res.json(updated);
@@ -276,7 +295,6 @@ router.delete('/items/:id', async (req, res) => {
     .limit(1);
   if (!existing) { res.status(404).json({ error: 'Item not found' }); return; }
 
-  // Fetch images before delete for Cloudinary cleanup
   const images = await db
     .select({ url: pantryItemImage.url })
     .from(pantryItemImage)
@@ -290,69 +308,6 @@ router.delete('/items/:id', async (req, res) => {
   }
 
   res.json({ message: 'Item deleted' });
-});
-
-// ─── Batch routes ─────────────────────────────────────────────────────────────
-
-router.post('/items/:id/batches', async (req, res) => {
-  const parsed = batchSchema.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
-
-  const [item] = await db
-    .select({ id: pantryItem.id })
-    .from(pantryItem)
-    .where(and(eq(pantryItem.id, req.params.id), eq(pantryItem.pantryId, req.pantryId)))
-    .limit(1);
-  if (!item) { res.status(404).json({ error: 'Item not found' }); return; }
-
-  const [batch] = await db
-    .insert(pantryBatch)
-    .values({ pantryItemId: req.params.id, fillLevel: parsed.data.fillLevel })
-    .returning();
-  res.status(201).json(batch);
-});
-
-router.patch('/batches/:id', async (req, res) => {
-  const parsed = batchSchema.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
-
-  const [batch] = await db
-    .select({ id: pantryBatch.id })
-    .from(pantryBatch)
-    .innerJoin(pantryItem, eq(pantryBatch.pantryItemId, pantryItem.id))
-    .where(and(eq(pantryBatch.id, req.params.id), eq(pantryItem.pantryId, req.pantryId)))
-    .limit(1);
-  if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
-
-  const [updated] = await db
-    .update(pantryBatch)
-    .set({ fillLevel: parsed.data.fillLevel, updatedAt: new Date() })
-    .where(eq(pantryBatch.id, req.params.id))
-    .returning();
-  res.json(updated);
-});
-
-router.delete('/batches/:id', async (req, res) => {
-  const [batch] = await db
-    .select({ id: pantryBatch.id, pantryItemId: pantryBatch.pantryItemId })
-    .from(pantryBatch)
-    .innerJoin(pantryItem, eq(pantryBatch.pantryItemId, pantryItem.id))
-    .where(and(eq(pantryBatch.id, req.params.id), eq(pantryItem.pantryId, req.pantryId)))
-    .limit(1);
-  if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
-
-  const allBatches = await db
-    .select({ id: pantryBatch.id })
-    .from(pantryBatch)
-    .where(eq(pantryBatch.pantryItemId, batch.pantryItemId));
-
-  if (allBatches.length <= 1) {
-    res.status(400).json({ error: 'Cannot delete the only batch — delete the pantry item instead' });
-    return;
-  }
-
-  await db.delete(pantryBatch).where(eq(pantryBatch.id, req.params.id));
-  res.json({ message: 'Batch deleted' });
 });
 
 // ─── Image routes ─────────────────────────────────────────────────────────────

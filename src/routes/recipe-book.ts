@@ -1,13 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { lookup as dnsLookup } from 'dns/promises';
-import { and, asc, eq, ilike, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { load } from 'cheerio';
 import { rateLimit } from 'express-rate-limit';
 import { db } from '../db';
 import { recipeBook, recipeCategory, recipe, recipeIngredient, recipeImage } from '../schema/recipe';
 import { ingredient } from '../schema/ingredient';
-import { pantry, pantryItem, pantryBatch } from '../schema/pantry';
+import { pantry, pantryItem } from '../schema/pantry';
 import { userPinnedRecipe } from '../schema/social';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
@@ -158,12 +158,20 @@ const ingredientInputSchema = z.object({
   sortOrder: z.number().int().min(0),
 });
 
+// Accept legacy string steps or new object format — normalise to objects
+const stepInput = z.union([
+  z.string().trim().min(1),
+  z.object({ text: z.string().trim().min(1), subSteps: z.array(z.string().trim()).default([]) }),
+]).transform((s): { text: string; subSteps: string[] } =>
+  typeof s === 'string' ? { text: s, subSteps: [] } : s
+);
+
 const createRecipeSchema = z.object({
   title: z.string().trim().min(1, 'Title is required').max(200),
   description: z.string().trim().max(2000).optional(),
   baseServings: z.number().int().positive('Base servings must be a positive number'),
   categoryId: z.string().uuid().nullable().optional(),
-  steps: z.array(z.string().trim().min(1)).min(1, 'At least one step is required'),
+  steps: z.array(stepInput).min(1, 'At least one step is required'),
   ingredients: z.array(ingredientInputSchema).min(1, 'At least one ingredient is required'),
 });
 
@@ -581,18 +589,12 @@ router.get('/can-make', async (req, res) => {
 
   if (recipes.length === 0) { res.json({ ready: [], almost: [], rest: [] }); return; }
 
-  // effectiveStock = SUM(fillLevel) across all batches per pantry item
   const stockRows = await db
-    .select({
-      ingredientId: pantryItem.ingredientId,
-      effectiveStock: sql<number>`COALESCE(SUM(${pantryBatch.fillLevel}), 0)::int`,
-    })
+    .select({ ingredientId: pantryItem.ingredientId, inStock: pantryItem.inStock })
     .from(pantryItem)
-    .leftJoin(pantryBatch, eq(pantryBatch.pantryItemId, pantryItem.id))
-    .where(eq(pantryItem.pantryId, p.id))
-    .groupBy(pantryItem.ingredientId);
+    .where(eq(pantryItem.pantryId, p.id));
 
-  const stockMap = new Map(stockRows.map(r => [r.ingredientId, r.effectiveStock]));
+  const stockMap = new Map(stockRows.map(r => [r.ingredientId, r.inStock]));
 
   const recipeIdList = recipes.map(r => r.id);
 
@@ -621,22 +623,14 @@ router.get('/can-make', async (req, res) => {
     const ings = byRecipe.get(r.id) ?? [];
     const measurable = ings.filter(i => i.quantity !== null);
 
-    const missing = measurable.filter(i => (stockMap.get(i.ingredientId) ?? 0) === 0);
-    const runningLow = measurable.filter(i => {
-      const stock = stockMap.get(i.ingredientId) ?? 0;
-      return stock > 0 && stock <= 25;
-    });
+    const missing = measurable.filter(i => !stockMap.get(i.ingredientId));
 
     const matchPct = measurable.length > 0
       ? Math.round(((measurable.length - missing.length) / measurable.length) * 100)
       : 100;
 
     if (missing.length === 0) {
-      ready.push({
-        id: r.id,
-        title: r.title,
-        runningLowItems: runningLow.map(i => ({ ingredientId: i.ingredientId, name: i.name })),
-      });
+      ready.push({ id: r.id, title: r.title, runningLowItems: [] });
     } else if (missing.length <= 2) {
       almost.push({
         id: r.id,
@@ -660,10 +654,40 @@ router.get('/can-make', async (req, res) => {
 router.get('/recipes', async (req, res) => {
   const categoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
+  const rawIngredients = req.query.ingredients;
+  const ingredientFilters: string[] = Array.isArray(rawIngredients)
+    ? (rawIngredients as string[]).map((v) => v.trim()).filter(Boolean)
+    : typeof rawIngredients === 'string'
+      ? rawIngredients.split(',').map((v) => v.trim()).filter(Boolean)
+      : [];
+
+  const strict = req.query.strict === 'true';
 
   const conditions = [eq(recipe.recipeBookId, req.recipeBookId)];
   if (categoryId) conditions.push(eq(recipe.categoryId, categoryId));
   if (search) conditions.push(ilike(recipe.title, `%${search}%`));
+  if (ingredientFilters.length > 0) {
+    if (strict) {
+      // Only recipes where ALL their ingredients are in the provided set
+      // NOT EXISTS any ingredient in the recipe that is NOT in the list
+      const lowerList = ingredientFilters.map((f) => f.toLowerCase());
+      conditions.push(
+        sql`NOT EXISTS (
+          SELECT 1 FROM recipe_ingredient _ri
+          JOIN ingredient _i ON _i.id = _ri.ingredient_id
+          WHERE _ri.recipe_id = ${recipe.id}
+          AND LOWER(_i.name) NOT IN (${sql.join(lowerList.map((l) => sql`${l}`), sql`, `)})
+        )`
+      );
+    } else {
+      const sub = db
+        .selectDistinct({ id: recipeIngredient.recipeId })
+        .from(recipeIngredient)
+        .innerJoin(ingredient, eq(recipeIngredient.ingredientId, ingredient.id))
+        .where(or(...ingredientFilters.map((name) => ilike(ingredient.name, `%${name}%`))));
+      conditions.push(inArray(recipe.id, sub));
+    }
+  }
 
   const rows = await db
     .select({
@@ -718,7 +742,7 @@ router.post('/recipes', async (req, res) => {
     return;
   }
 
-  if (steps.some(step => !textIsClean(step))) {
+  if (steps.some(step => !textIsClean(step.text))) {
     res.status(400).json({ error: 'Recipe contains inappropriate content' });
     return;
   }
@@ -860,7 +884,7 @@ router.patch('/recipes/:id', async (req, res) => {
     return;
   }
 
-  if (steps !== undefined && steps.some(step => !textIsClean(step))) {
+  if (steps !== undefined && steps.some(step => !textIsClean(step.text))) {
     res.status(400).json({ error: 'Recipe contains inappropriate content' });
     return;
   }

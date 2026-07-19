@@ -1,9 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { recipe, recipeBook, recipeCook, recipeCookImage } from '../schema/recipe';
-import { pantry, pantryBatch, pantryItem } from '../schema/pantry';
+import { recipe, recipeBook, recipeCook, recipeCookImage, recipeCategory } from '../schema/recipe';
+import { householdUser } from '../schema/household';
+import { user } from '../schema/auth';
+import { pantry, pantryItem } from '../schema/pantry';
 import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
@@ -27,20 +29,16 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
-const fillLevelSchema = z.union([
-  z.literal(0), z.literal(25), z.literal(50), z.literal(75), z.literal(100),
-]);
-
 const pendingChangesSchema = z.object({
   ticked: z.array(z.string().uuid()).default([]),
   tickedSteps: z.array(z.number().int().min(0)).default([]),
   pantryChanges: z.array(z.object({
-    batchId: z.string().uuid(),
-    newFillLevel: fillLevelSchema,
+    itemId: z.string().uuid(),
+    inStock: z.boolean(),
   })).default([]),
   extraChanges: z.array(z.object({
-    batchId: z.string().uuid(),
-    newFillLevel: fillLevelSchema,
+    itemId: z.string().uuid(),
+    inStock: z.boolean(),
   })).default([]),
 });
 
@@ -69,6 +67,46 @@ router.get('/', async (req, res) => {
     .leftJoin(recipe, eq(recipeCook.recipeId, recipe.id))
     .where(and(...conditions))
     .orderBy(desc(recipeCook.cookedAt));
+
+  res.json(sessions);
+});
+
+// GET /api/cook-sessions/household-history — all completed sessions for the household
+router.get('/household-history', async (req, res) => {
+  const householdUserIds = await db
+    .select({ userId: householdUser.userId })
+    .from(householdUser)
+    .where(eq(householdUser.householdId, req.householdId));
+
+  if (householdUserIds.length === 0) { res.json([]); return; }
+
+  const userIds = householdUserIds.map((h) => h.userId);
+
+  const sessions = await db
+    .select({
+      id: recipeCook.id,
+      recipeId: recipeCook.recipeId,
+      recipeTitle: recipe.title,
+      recipeImage: sql<string | null>`(
+        SELECT url FROM recipe_image WHERE recipe_id = ${recipeCook.recipeId} ORDER BY sort_order ASC LIMIT 1
+      )`,
+      userId: recipeCook.userId,
+      userName: user.name,
+      userHandle: sql<string | null>`(SELECT handle FROM "user" WHERE id = ${recipeCook.userId})`,
+      userImage: user.image,
+      servings: recipeCook.servings,
+      note: recipeCook.note,
+      cookedAt: recipeCook.cookedAt,
+    })
+    .from(recipeCook)
+    .leftJoin(recipe, eq(recipeCook.recipeId, recipe.id))
+    .leftJoin(user, eq(recipeCook.userId, user.id))
+    .where(and(
+      inArray(recipeCook.userId, userIds),
+      eq(recipeCook.status, 'COMPLETED'),
+    ))
+    .orderBy(desc(recipeCook.cookedAt))
+    .limit(100);
 
   res.json(sessions);
 });
@@ -200,74 +238,53 @@ router.post('/:id/complete', async (req, res) => {
     return;
   }
 
+  const parsedBody = z.object({
+    pantryChanges: z.array(z.object({ itemId: z.string().uuid(), inStock: z.boolean() })).optional(),
+    servings: z.number().int().positive().nullable().optional(),
+  }).safeParse(req.body);
+
+  const bodyServings = parsedBody.success ? (parsedBody.data.servings ?? null) : null;
+  const bodyPantryChanges = parsedBody.success ? (parsedBody.data.pantryChanges ?? null) : null;
+
   const changes = session.pendingChanges ?? { ticked: [], pantryChanges: [], extraChanges: [] };
-  const allBatchChanges = [...changes.pantryChanges, ...changes.extraChanges];
+  const allItemChanges = bodyPantryChanges ?? [...changes.pantryChanges, ...changes.extraChanges];
 
   const result = await db.transaction(async (tx) => {
-    // Track which pantryItem IDs we successfully updated for the stock check below
-    const affectedItemIds: string[] = [];
+    const outOfStockItemIds: string[] = [];
 
-    for (const { batchId, newFillLevel } of allBatchChanges) {
-      const [batch] = await tx
-        .select({ id: pantryBatch.id, pantryItemId: pantryBatch.pantryItemId })
-        .from(pantryBatch)
-        .innerJoin(pantryItem, eq(pantryBatch.pantryItemId, pantryItem.id))
-        .where(and(eq(pantryBatch.id, batchId), eq(pantryItem.pantryId, pantryRow.id)))
+    for (const { itemId, inStock } of allItemChanges) {
+      const [item] = await tx
+        .select({ id: pantryItem.id })
+        .from(pantryItem)
+        .where(and(eq(pantryItem.id, itemId), eq(pantryItem.pantryId, pantryRow.id)))
         .limit(1);
 
-      if (!batch) continue; // batch deleted mid-session; skip silently
+      if (!item) continue; // item deleted mid-session; skip silently
 
       await tx
-        .update(pantryBatch)
-        .set({ fillLevel: newFillLevel, updatedAt: new Date() })
-        .where(eq(pantryBatch.id, batchId));
+        .update(pantryItem)
+        .set({ inStock, updatedAt: new Date() })
+        .where(eq(pantryItem.id, item.id));
 
-      affectedItemIds.push(batch.pantryItemId);
+      if (!inStock) outOfStockItemIds.push(item.id);
     }
 
     const [done] = await tx
       .update(recipeCook)
-      .set({ status: 'COMPLETED', pendingChanges: null })
+      .set({ status: 'COMPLETED', pendingChanges: null, servings: bodyServings })
       .where(eq(recipeCook.id, session.id))
       .returning();
 
-    // Calculate effective stock for every affected pantry item (reads post-update values)
-    let lowStockItems: { ingredientId: string; name: string; effectiveStock: number }[] = [];
+    let lowStockItems: { ingredientId: string; name: string }[] = [];
 
-    const uniqueItemIds = [...new Set(affectedItemIds)];
-    if (uniqueItemIds.length > 0) {
-      const allBatches = await tx
-        .select({ pantryItemId: pantryBatch.pantryItemId, fillLevel: pantryBatch.fillLevel })
-        .from(pantryBatch)
-        .where(inArray(pantryBatch.pantryItemId, uniqueItemIds));
+    if (outOfStockItemIds.length > 0) {
+      const rows = await tx
+        .select({ ingredientId: pantryItem.ingredientId, name: ingredient.name })
+        .from(pantryItem)
+        .innerJoin(ingredient, eq(pantryItem.ingredientId, ingredient.id))
+        .where(inArray(pantryItem.id, outOfStockItemIds));
 
-      // Sum fill levels per item
-      const stockByItemId: Record<string, number> = {};
-      for (const b of allBatches) {
-        stockByItemId[b.pantryItemId] = (stockByItemId[b.pantryItemId] ?? 0) + b.fillLevel;
-      }
-
-      const lowItemIds = Object.entries(stockByItemId)
-        .filter(([, stock]) => stock <= 25)
-        .map(([id]) => id);
-
-      if (lowItemIds.length > 0) {
-        const rows = await tx
-          .select({
-            pantryItemId: pantryItem.id,
-            ingredientId: pantryItem.ingredientId,
-            name: ingredient.name,
-          })
-          .from(pantryItem)
-          .innerJoin(ingredient, eq(pantryItem.ingredientId, ingredient.id))
-          .where(inArray(pantryItem.id, lowItemIds));
-
-        lowStockItems = rows.map(r => ({
-          ingredientId: r.ingredientId,
-          name: r.name,
-          effectiveStock: stockByItemId[r.pantryItemId] ?? 0,
-        }));
-      }
+      lowStockItems = rows;
     }
 
     return { session: done, lowStockItems };

@@ -7,7 +7,6 @@ const EMAIL = 'pantry@test.com';
 let cookie: string;
 let categoryId: string;
 let itemId: string;
-let batchId: string;
 
 beforeAll(async () => {
   cookie = await signIn(EMAIL, 'Pantry User');
@@ -39,95 +38,68 @@ describe('Pantry — Categories', () => {
   });
 });
 
-describe('Pantry — Items & Batches', () => {
-  it('adds an ingredient to the pantry with an initial batch at 100%', async () => {
+describe('Pantry — Items', () => {
+  it('adds an ingredient to the pantry as in-stock', async () => {
     const res = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookie)
-      .send({ ingredientName: 'milk', categoryId, fillLevel: 100 });
+      .send({ name: 'milk', categoryId, inStock: true });
 
     expect(res.status).toBe(201);
     expect(res.body.id).toBeDefined();
-    expect(res.body.batches[0].fillLevel).toBe(100);
+    expect(res.body.inStock).toBe(true);
     itemId = res.body.id;
-    batchId = res.body.batches[0].id;
   });
 
   it('rejects adding the same ingredient twice', async () => {
     const res = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookie)
-      .send({ ingredientName: 'milk', fillLevel: 75 });
+      .send({ name: 'milk' });
 
     expect(res.status).toBe(409);
   });
 
-  it('rejects an invalid fill level', async () => {
+  it('adds an item with a quantityNote', async () => {
     const res = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookie)
-      .send({ ingredientName: 'butter', fillLevel: 33 });
-
-    expect(res.status).toBe(400);
-  });
-
-  it('lists items with effectiveStock', async () => {
-    const res = await request(app)
-      .get('/api/pantry/items')
-      .set('Cookie', cookie);
-
-    expect(res.status).toBe(200);
-    expect(res.body.length).toBe(1);
-    expect(res.body[0].effectiveStock).toBe(100);
-  });
-
-  it('adds a second batch to an item', async () => {
-    const res = await request(app)
-      .post(`/api/pantry/items/${itemId}/batches`)
-      .set('Cookie', cookie)
-      .send({ fillLevel: 50 });
+      .send({ name: 'chicken breast', inStock: true, quantityNote: '500g pack' });
 
     expect(res.status).toBe(201);
+    expect(res.body.quantityNote).toBe('500g pack');
+  });
 
-    const listRes = await request(app)
+  it('lists items with inStock and images', async () => {
+    const res = await request(app)
       .get('/api/pantry/items')
       .set('Cookie', cookie);
 
-    // effectiveStock = 100 + 50 = 150
-    expect(listRes.body[0].effectiveStock).toBe(150);
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThanOrEqual(1);
+    expect(typeof res.body[0].inStock).toBe('boolean');
+    expect(Array.isArray(res.body[0].images)).toBe(true);
   });
 
-  it('updates a batch fill level', async () => {
+  it('marks an item out of stock', async () => {
     const res = await request(app)
-      .patch(`/api/pantry/batches/${batchId}`)
+      .patch(`/api/pantry/items/${itemId}`)
       .set('Cookie', cookie)
-      .send({ fillLevel: 25 });
+      .send({ inStock: false });
 
     expect(res.status).toBe(200);
-    expect(res.body.fillLevel).toBe(25);
+    expect(res.body.inStock).toBe(false);
   });
 
-  it('blocks deleting the last batch — delete the item instead', async () => {
-    // Get the second batch
-    const itemRes = await request(app)
-      .get(`/api/pantry/items/${itemId}`)
-      .set('Cookie', cookie);
+  it('updates quantityNote on an item', async () => {
+    const res = await request(app)
+      .patch(`/api/pantry/items/${itemId}`)
+      .set('Cookie', cookie)
+      .send({ quantityNote: '2L carton', inStock: true });
 
-    const batches = itemRes.body.batches;
-    expect(batches.length).toBe(2);
-
-    // Delete one — should succeed
-    const secondBatchId = batches.find((b: any) => b.id !== batchId).id;
-    const del1 = await request(app)
-      .delete(`/api/pantry/batches/${secondBatchId}`)
-      .set('Cookie', cookie);
-    expect(del1.status).toBe(200);
-
-    // Delete the last — should be blocked
-    const del2 = await request(app)
-      .delete(`/api/pantry/batches/${batchId}`)
-      .set('Cookie', cookie);
-    expect(del2.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.quantityNote).toBe('2L carton');
+    expect(res.body.inStock).toBe(true);
   });
 
   it('deletes an item', async () => {

@@ -169,7 +169,7 @@ describe('Cross-household isolation', () => {
     const res = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookieA)
-      .send({ ingredientName: 'eggs', fillLevel: 100, categoryId: pantryCategoryIdB });
+      .send({ name: 'eggs', categoryId: pantryCategoryIdB });
     expect(res.status).toBe(400);
   });
 

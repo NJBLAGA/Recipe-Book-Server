@@ -4,7 +4,7 @@ import { user } from './schema/auth';
 import { householdUser } from './schema/household';
 import { ingredient } from './schema/ingredient';
 import { recipeBook, recipe, recipeIngredient } from './schema/recipe';
-import { pantry, pantryItem, pantryBatch } from './schema/pantry';
+import { pantry, pantryItem } from './schema/pantry';
 import { eq, ilike } from 'drizzle-orm';
 
 async function main() {
@@ -49,8 +49,8 @@ async function main() {
   const existingIds = new Set(existing.map((e) => e.ingredientId));
   console.log(`${existingIds.size} already in pantry`);
 
-  // The fill levels to vary across — simulate realistic stock
-  const fillLevels: Array<0 | 25 | 50 | 75 | 100> = [100, 100, 75, 75, 50, 50, 25, 0, 100, 75];
+  // Vary in-stock status to simulate realistic pantry
+  const stockPattern = [true, true, true, true, true, false, true, true, false, true];
   let added = 0;
   let idx = 0;
 
@@ -60,17 +60,12 @@ async function main() {
       continue;
     }
 
-    const fillLevel = fillLevels[idx % fillLevels.length];
+    const inStock = stockPattern[idx % stockPattern.length];
     idx++;
 
-    const [item] = await db
-      .insert(pantryItem)
-      .values({ pantryId, ingredientId })
-      .returning({ id: pantryItem.id });
+    await db.insert(pantryItem).values({ pantryId, ingredientId, inStock });
 
-    await db.insert(pantryBatch).values({ pantryItemId: item.id, fillLevel });
-
-    console.log(`  Added: ${name} — ${fillLevel}%`);
+    console.log(`  Added: ${name} — ${inStock ? 'in stock' : 'out of stock'}`);
     added++;
   }
 

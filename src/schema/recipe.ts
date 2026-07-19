@@ -27,7 +27,7 @@ export const recipe = pgTable('recipe', {
   title: text('title').notNull(),
   description: text('description'),
   baseServings: integer('base_servings').notNull(),
-  steps: jsonb('steps').$type<string[]>().notNull().default([]),
+  steps: jsonb('steps').$type<{ text: string; subSteps: string[] }[]>().notNull().default([]),
   sharedByUserId: text('shared_by_user_id').references(() => user.id, { onDelete: 'set null' }),
   originalRecipeId: uuid('original_recipe_id').references((): AnyPgColumn => recipe.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -60,10 +60,11 @@ export const recipeCook = pgTable('recipe_cook', {
   pendingChanges: jsonb('pending_changes').$type<{
     ticked: string[];
     tickedSteps: number[];
-    pantryChanges: { batchId: string; newFillLevel: number }[];
-    extraChanges: { batchId: string; newFillLevel: number }[];
+    pantryChanges: { itemId: string; inStock: boolean }[];
+    extraChanges: { itemId: string; inStock: boolean }[];
   }>(),
   note: text('note'),
+  servings: integer('servings'),
   cookedAt: timestamp('cooked_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

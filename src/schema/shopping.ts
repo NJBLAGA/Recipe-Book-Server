@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, numeric, boolean, pgEnum, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, numeric, boolean, integer, pgEnum, unique } from 'drizzle-orm/pg-core';
 import { household } from './household';
 import { ingredient } from './ingredient';
 
@@ -19,15 +19,19 @@ export const shoppingListCategory = pgTable('shopping_list_category', {
   unique('shopping_list_category_name_unique').on(t.shoppingListId, t.name),
 ]);
 
+import { user } from './auth';
+
 export const shoppingListItem = pgTable('shopping_list_item', {
   id: uuid('id').primaryKey().defaultRandom(),
   shoppingListId: uuid('shopping_list_id').notNull().references(() => shoppingList.id, { onDelete: 'cascade' }),
   categoryId: uuid('category_id').references(() => shoppingListCategory.id, { onDelete: 'set null' }),
   ingredientId: uuid('ingredient_id').references(() => ingredient.id),
+  addedByUserId: text('added_by_user_id').references(() => user.id, { onDelete: 'set null' }),
   name: text('name').notNull(),
   quantity: numeric('quantity'),
   unit: text('unit'),
   isChecked: boolean('is_checked').notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
   source: itemSourceEnum('source'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

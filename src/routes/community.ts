@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, asc, avg, count, desc, eq, gte, inArray, isNotNull, lte, or } from 'drizzle-orm';
+import { and, asc, avg, count, desc, eq, gte, ilike, inArray, isNotNull, lte, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { communityPost, follow, recipeShare, review } from '../schema/social';
@@ -13,17 +13,33 @@ const router = Router();
 router.use(requireAuth);
 
 // ─── GET /api/community/posts — public feed ───────────────────────────────────
-// Optional query params: userId, from (ISO), to (ISO)
+// Optional query params: userId, from (ISO), to (ISO), ingredients (comma-separated)
 router.get('/posts', async (req, res) => {
   const filterUserId = typeof req.query.userId === 'string' ? req.query.userId : null;
   const fromParam = typeof req.query.from === 'string' ? new Date(req.query.from) : null;
   const toParam = typeof req.query.to === 'string' ? new Date(req.query.to) : null;
+  const rawIngredients = req.query.ingredients;
+  const ingredientFilters: string[] = Array.isArray(rawIngredients)
+    ? (rawIngredients as string[]).map((v) => v.trim()).filter(Boolean)
+    : typeof rawIngredients === 'string'
+      ? rawIngredients.split(',').map((v) => v.trim()).filter(Boolean)
+      : [];
 
   const baseWhere = or(eq(user.isPublic, true), eq(communityPost.userId, req.user.id))!;
   const conditions = [baseWhere];
   if (filterUserId) conditions.push(eq(communityPost.userId, filterUserId));
   if (fromParam && !isNaN(fromParam.getTime())) conditions.push(gte(communityPost.createdAt, fromParam));
   if (toParam && !isNaN(toParam.getTime())) conditions.push(lte(communityPost.createdAt, toParam));
+
+  if (ingredientFilters.length > 0) {
+    const matchingIds = await db
+      .selectDistinct({ recipeId: recipeIngredient.recipeId })
+      .from(recipeIngredient)
+      .innerJoin(ingredient, eq(recipeIngredient.ingredientId, ingredient.id))
+      .where(or(...ingredientFilters.map((name) => ilike(ingredient.name, `%${name}%`))));
+    if (matchingIds.length === 0) { res.json([]); return; }
+    conditions.push(inArray(communityPost.recipeId, matchingIds.map((r) => r.recipeId)));
+  }
 
   const rows = await db
     .select({

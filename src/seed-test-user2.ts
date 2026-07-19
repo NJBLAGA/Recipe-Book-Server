@@ -82,7 +82,7 @@ async function seed() {
           title: r.title,
           description: r.description,
           baseServings: 4,
-          steps: ['Prepare ingredients.', 'Cook according to method.', 'Serve and enjoy.'],
+          steps: ['Prepare ingredients.', 'Cook according to method.', 'Serve and enjoy.'].map((s) => ({ text: s, subSteps: [] as string[] })),
         })
         .returning();
 

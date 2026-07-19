@@ -7,7 +7,7 @@ const EMAIL = 'cooksessions@test.com';
 let cookie: string;
 let recipeId: string;
 let sessionId: string;
-let batchId: string;
+let pantryItemId: string;
 
 beforeAll(async () => {
   cookie = await signIn(EMAIL, 'Cook User');
@@ -31,8 +31,8 @@ beforeAll(async () => {
   const pantryRes = await request(app)
     .post('/api/pantry/items')
     .set('Cookie', cookie)
-    .send({ ingredientName: 'water', fillLevel: 100 });
-  batchId = pantryRes.body.batches[0].id;
+    .send({ name: 'water', inStock: true });
+  pantryItemId = pantryRes.body.id;
 });
 
 afterAll(async () => {
@@ -75,7 +75,7 @@ describe('Cook Sessions', () => {
   it('saves pending changes mid-cook', async () => {
     const pendingChanges = {
       ticked: [],
-      pantryChanges: [{ batchId, newFillLevel: 50 }],
+      pantryChanges: [{ itemId: pantryItemId, inStock: false }],
       extraChanges: [],
     };
 
@@ -87,14 +87,14 @@ describe('Cook Sessions', () => {
     expect(res.status).toBe(200);
   });
 
-  it('rejects invalid fill levels in pending changes', async () => {
+  it('rejects invalid pending changes shape', async () => {
     const res = await request(app)
       .patch(`/api/cook-sessions/${sessionId}/pending-changes`)
       .set('Cookie', cookie)
       .send({
         pendingChanges: {
           ticked: [],
-          pantryChanges: [{ batchId, newFillLevel: 33 }],
+          pantryChanges: [{ itemId: 'not-a-uuid', inStock: 'maybe' }],
           extraChanges: [],
         },
       });
@@ -111,8 +111,9 @@ describe('Cook Sessions', () => {
     expect(res.body.session.status).toBe('COMPLETED');
     expect(res.body.lowStockItems).toBeDefined();
 
-    // Water batch was set to 50% — not low (> 25%), so lowStockItems should be empty
-    expect(res.body.lowStockItems.length).toBe(0);
+    // Water was marked out of stock, so it appears in lowStockItems
+    expect(res.body.lowStockItems.length).toBe(1);
+    expect(res.body.lowStockItems[0].name).toBe('water');
   });
 
   it('completed session appears in cook history', async () => {

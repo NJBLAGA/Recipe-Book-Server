@@ -217,7 +217,7 @@ async function seed() {
       title: r.title,
       description: r.description,
       baseServings: r.baseServings,
-      steps: r.steps,
+      steps: (r.steps as string[]).map((s) => ({ text: s, subSteps: [] as string[] })),
     }).returning();
 
     for (let i = 0; i < r.ingredients.length; i++) {
