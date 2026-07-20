@@ -35,6 +35,22 @@ async function main() {
   `);
   console.log('✓ recipe steps migrated to {text, subSteps} format');
 
+  // shopping_list_item: add note
+  await db.execute(sql`ALTER TABLE shopping_list_item ADD COLUMN IF NOT EXISTS note text`);
+  console.log('✓ shopping_list_item.note');
+
+  // shopping_list_item_image table
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS shopping_list_item_image (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      item_id uuid NOT NULL REFERENCES shopping_list_item(id) ON DELETE CASCADE,
+      url text NOT NULL,
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  console.log('✓ shopping_list_item_image table');
+
   console.log('\nAll migrations complete.');
   process.exit(0);
 }

@@ -1,12 +1,14 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { and, asc, desc, eq, gt, lt, max, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lt, max, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { shoppingList, shoppingListCategory, shoppingListItem } from '../schema/shopping';
+import { shoppingList, shoppingListCategory, shoppingListItem, shoppingListItemImage } from '../schema/shopping';
 import { ingredient } from '../schema/ingredient';
 import { user } from '../schema/auth';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
+import { upload } from '../lib/upload';
+import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
 
 const router = Router();
 router.use(requireAuth);
@@ -35,6 +37,7 @@ const createItemSchema = z.object({
   ingredientId: z.string().uuid().nullable().optional(),
   quantity: z.number().positive().nullable().optional(),
   unit: z.string().trim().max(50).nullable().optional(),
+  note: z.string().trim().max(500).nullable().optional(),
   source: z.enum(['RECIPE', 'PANTRY', 'DIRECT']).optional(),
 });
 
@@ -43,6 +46,7 @@ const updateItemSchema = z.object({
   categoryId: z.string().uuid().nullable().optional(),
   quantity: z.number().positive().nullable().optional(),
   unit: z.string().trim().max(50).nullable().optional(),
+  note: z.string().trim().max(500).nullable().optional(),
   isChecked: z.boolean().optional(),
 });
 
@@ -155,7 +159,7 @@ router.get('/items', async (req, res) => {
   if (isChecked !== undefined) conditions.push(eq(shoppingListItem.isChecked, isChecked));
   if (addedByUserId) conditions.push(eq(shoppingListItem.addedByUserId, addedByUserId));
 
-  const items = await db
+  const rows = await db
     .select({
       id: shoppingListItem.id,
       name: shoppingListItem.name,
@@ -167,6 +171,7 @@ router.get('/items', async (req, res) => {
       sortOrder: shoppingListItem.sortOrder,
       quantity: shoppingListItem.quantity,
       unit: shoppingListItem.unit,
+      note: shoppingListItem.note,
       isChecked: shoppingListItem.isChecked,
       source: shoppingListItem.source,
       createdAt: shoppingListItem.createdAt,
@@ -178,7 +183,18 @@ router.get('/items', async (req, res) => {
     .where(and(...conditions))
     .orderBy(asc(shoppingListCategory.name), asc(shoppingListItem.sortOrder), asc(shoppingListItem.createdAt));
 
-  res.json(items);
+  const itemIds = rows.map((r) => r.id);
+  const images = itemIds.length > 0
+    ? await db.select().from(shoppingListItemImage).where(inArray(shoppingListItemImage.itemId, itemIds)).orderBy(asc(shoppingListItemImage.sortOrder))
+    : [];
+
+  const imagesByItemId = new Map<string, typeof images>();
+  for (const img of images) {
+    if (!imagesByItemId.has(img.itemId)) imagesByItemId.set(img.itemId, []);
+    imagesByItemId.get(img.itemId)!.push(img);
+  }
+
+  res.json(rows.map((r) => ({ ...r, images: imagesByItemId.get(r.id) ?? [] })));
 });
 
 // Must be registered before /:id so Express doesn't treat "checked" as an :id param
@@ -236,6 +252,7 @@ router.post('/items', async (req, res) => {
       addedByUserId: req.user.id,
       quantity: parsed.data.quantity != null ? String(parsed.data.quantity) : null,
       unit: parsed.data.unit ?? null,
+      note: parsed.data.note ?? null,
       source: parsed.data.source ?? null,
       sortOrder: nextOrder,
     })
@@ -257,7 +274,7 @@ router.patch('/items/:id', async (req, res) => {
     .limit(1);
   if (!existing) { res.status(404).json({ error: 'Item not found' }); return; }
 
-  const { name, categoryId, quantity, unit, isChecked } = parsed.data;
+  const { name, categoryId, quantity, unit, note, isChecked } = parsed.data;
 
   if (categoryId) {
     const [cat] = await db
@@ -275,6 +292,7 @@ router.patch('/items/:id', async (req, res) => {
       ...(categoryId !== undefined && { categoryId }),
       ...(quantity !== undefined && { quantity: quantity != null ? String(quantity) : null }),
       ...(unit !== undefined && { unit }),
+      ...(note !== undefined && { note }),
       ...(isChecked !== undefined && { isChecked }),
       updatedAt: new Date(),
     })
@@ -334,6 +352,53 @@ router.delete('/items/:id', async (req, res) => {
 
   await db.delete(shoppingListItem).where(eq(shoppingListItem.id, req.params.id));
   res.json({ message: 'Item deleted' });
+});
+
+// ─── Shopping list item image routes ─────────────────────────────────────────
+
+router.post('/items/:id/images', upload.single('image'), async (req: Request, res: Response) => {
+  const itemRows = await db.execute<{ id: string; shopping_list_id: string }>(
+    sql`SELECT id, shopping_list_id FROM shopping_list_item WHERE id = ${req.params.id} LIMIT 1`
+  );
+  const item = itemRows.rows[0];
+  if (!item || item.shopping_list_id !== req.shoppingListId) { res.status(404).json({ error: 'Item not found' }); return; }
+  if (!req.file) { res.status(400).json({ error: 'No image uploaded' }); return; }
+
+  const url = await uploadImage(req.file.buffer, `shopping-list-items/${item.id}`);
+
+  const maxRows = await db.execute<{ m: number | null }>(
+    sql`SELECT MAX(sort_order) AS m FROM shopping_list_item_image WHERE item_id = ${item.id}`
+  );
+  const nextSort = ((maxRows.rows[0]?.m ?? -1) as number) + 1;
+
+  const [img] = await db
+    .insert(shoppingListItemImage)
+    .values({ itemId: item.id, url, sortOrder: nextSort })
+    .returning();
+
+  res.status(201).json(img);
+});
+
+router.delete('/items/:id/images/:imageId', async (req, res) => {
+  const [item] = await db
+    .select({ id: shoppingListItem.id })
+    .from(shoppingListItem)
+    .where(and(eq(shoppingListItem.id, req.params.id), eq(shoppingListItem.shoppingListId, req.shoppingListId)))
+    .limit(1);
+  if (!item) { res.status(404).json({ error: 'Item not found' }); return; }
+
+  const [img] = await db
+    .select()
+    .from(shoppingListItemImage)
+    .where(and(eq(shoppingListItemImage.id, req.params.imageId), eq(shoppingListItemImage.itemId, item.id)))
+    .limit(1);
+  if (!img) { res.status(404).json({ error: 'Image not found' }); return; }
+
+  const publicId = extractPublicId(img.url);
+  if (publicId) await deleteImage(publicId).catch(() => {});
+  await db.delete(shoppingListItemImage).where(eq(shoppingListItemImage.id, img.id));
+
+  res.json({ message: 'Image deleted' });
 });
 
 export default router;

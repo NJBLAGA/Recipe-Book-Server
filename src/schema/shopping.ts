@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, numeric, boolean, integer, pgEnum, unique } from 'drizzle-orm/pg-core';
+
 import { household } from './household';
 import { ingredient } from './ingredient';
 
@@ -30,9 +31,18 @@ export const shoppingListItem = pgTable('shopping_list_item', {
   name: text('name').notNull(),
   quantity: numeric('quantity'),
   unit: text('unit'),
+  note: text('note'),
   isChecked: boolean('is_checked').notNull().default(false),
   sortOrder: integer('sort_order').notNull().default(0),
   source: itemSourceEnum('source'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const shoppingListItemImage = pgTable('shopping_list_item_image', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  itemId: uuid('item_id').notNull().references(() => shoppingListItem.id, { onDelete: 'cascade' }),
+  url: text('url').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });

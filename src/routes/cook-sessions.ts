@@ -111,6 +111,43 @@ router.get('/household-history', async (req, res) => {
   res.json(sessions);
 });
 
+// GET /api/cook-sessions/household-in-progress — all active sessions for the household
+router.get('/household-in-progress', async (req, res) => {
+  const householdUserIds = await db
+    .select({ userId: householdUser.userId })
+    .from(householdUser)
+    .where(eq(householdUser.householdId, req.householdId));
+
+  if (householdUserIds.length === 0) { res.json([]); return; }
+
+  const userIds = householdUserIds.map((h) => h.userId);
+
+  const sessions = await db
+    .select({
+      id: recipeCook.id,
+      recipeId: recipeCook.recipeId,
+      recipeTitle: recipe.title,
+      recipeImage: sql<string | null>`(
+        SELECT url FROM recipe_image WHERE recipe_id = ${recipeCook.recipeId} ORDER BY sort_order ASC LIMIT 1
+      )`,
+      userId: recipeCook.userId,
+      userName: user.name,
+      userHandle: sql<string | null>`(SELECT handle FROM "user" WHERE id = ${recipeCook.userId})`,
+      userImage: user.image,
+      startedAt: recipeCook.cookedAt,
+    })
+    .from(recipeCook)
+    .leftJoin(recipe, eq(recipeCook.recipeId, recipe.id))
+    .leftJoin(user, eq(recipeCook.userId, user.id))
+    .where(and(
+      inArray(recipeCook.userId, userIds),
+      eq(recipeCook.status, 'IN_PROGRESS'),
+    ))
+    .orderBy(desc(recipeCook.cookedAt));
+
+  res.json(sessions);
+});
+
 // GET /api/cook-sessions/active — current user's IN_PROGRESS session (optional ?recipeId)
 // Registered before /:id so Express doesn't match "active" as a param
 router.get('/active', async (req, res) => {
@@ -239,7 +276,13 @@ router.post('/:id/complete', async (req, res) => {
   }
 
   const parsedBody = z.object({
-    pantryChanges: z.array(z.object({ itemId: z.string().uuid(), inStock: z.boolean() })).optional(),
+    pantryChanges: z.array(z.object({
+      itemId: z.string().uuid(),
+      inStock: z.boolean(),
+      quantity: z.number().int().min(1).max(999).nullable().optional(),
+      unit: z.string().trim().max(50).nullable().optional(),
+      notes: z.string().trim().max(500).nullable().optional(),
+    })).optional(),
     servings: z.number().int().positive().nullable().optional(),
   }).safeParse(req.body);
 
@@ -252,7 +295,8 @@ router.post('/:id/complete', async (req, res) => {
   const result = await db.transaction(async (tx) => {
     const outOfStockItemIds: string[] = [];
 
-    for (const { itemId, inStock } of allItemChanges) {
+    for (const change of allItemChanges) {
+      const { itemId, inStock } = change;
       const [item] = await tx
         .select({ id: pantryItem.id })
         .from(pantryItem)
@@ -261,9 +305,14 @@ router.post('/:id/complete', async (req, res) => {
 
       if (!item) continue; // item deleted mid-session; skip silently
 
+      const updateFields: Record<string, unknown> = { inStock, updatedAt: new Date() };
+      if ('quantity' in change && change.quantity !== undefined) updateFields.quantity = change.quantity;
+      if ('unit' in change && change.unit !== undefined) updateFields.unit = change.unit;
+      if ('notes' in change && change.notes !== undefined) updateFields.notes = change.notes;
+
       await tx
         .update(pantryItem)
-        .set({ inStock, updatedAt: new Date() })
+        .set(updateFields)
         .where(eq(pantryItem.id, item.id));
 
       if (!inStock) outOfStockItemIds.push(item.id);
