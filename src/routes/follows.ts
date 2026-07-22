@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { Request } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
@@ -6,6 +8,15 @@ import { follow } from '../schema/social';
 import { user } from '../schema/auth';
 import { householdUser } from '../schema/household';
 import { requireAuth } from '../middleware/requireAuth';
+
+const followLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 100,
+  keyGenerator: (req) => (req as Request).user?.id ?? 'unknown',
+  message: { error: 'Too many follow requests — please wait before trying again' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const router = Router();
 router.use(requireAuth);
@@ -52,8 +63,8 @@ router.get('/followers', async (req, res) => {
 });
 
 // POST /api/follows — follow a user
-router.post('/', async (req, res) => {
-  const parsed = z.object({ followingId: z.string() }).safeParse(req.body);
+router.post('/', followLimiter, async (req, res) => {
+  const parsed = z.object({ followingId: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
   if (parsed.data.followingId === req.user.id) {

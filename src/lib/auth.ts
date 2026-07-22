@@ -43,10 +43,12 @@ export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL!,
   trustedOrigins: [
     process.env.CLIENT_URL ?? 'http://localhost:5173',
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:5175',
-    'http://localhost:5176',
+    ...(process.env.NODE_ENV !== 'production' ? [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:5175',
+      'http://localhost:5176',
+    ] : []),
   ],
 
   database: drizzleAdapter(db, {
@@ -58,35 +60,41 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: true,
     sendResetPassword: async ({ user, url }: { user: { email: string }; url: string; token: string }) => {
-      await sendEmail({
-        to: user.email,
-        subject: 'Reset your password',
-        html: `<p>Click the link below to reset your password. This link expires in 1 hour.</p>
-               <a href="${url}">Reset password</a>`,
-      });
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: 'Reset your password',
+          html: `<p>Click the link below to reset your password. This link expires in 1 hour.</p>
+                 <a href="${url}">Reset password</a>`,
+        });
+      } catch { /* email delivery failure — non-blocking */ }
     },
     onPasswordReset: async ({ user }: { user: { email: string } }) => {
-      await sendEmail({
-        to: user.email,
-        subject: 'Your password has been changed',
-        html: `<p>Your password was successfully reset. If you did not make this change, contact support immediately.</p>`,
-      });
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: 'Your password has been changed',
+          html: `<p>Your password was successfully reset. If you did not make this change, contact support immediately.</p>`,
+        });
+      } catch { /* email delivery failure — non-blocking */ }
     },
   },
 
   emailVerification: {
     sendVerificationEmail: async (opts: { user: { email: string }; url: string }) => {
-      const verificationUrl = new URL(opts.url);
-      verificationUrl.searchParams.set(
-        'callbackURL',
-        `${process.env.CLIENT_URL ?? 'http://localhost:5173'}/sign-in?verified=true`,
-      );
-      await sendEmail({
-        to: opts.user.email,
-        subject: 'Verify your email address',
-        html: `<p>Welcome! Click the link below to verify your email address.</p>
-               <a href="${verificationUrl.toString()}">Verify email</a>`,
-      });
+      try {
+        const verificationUrl = new URL(opts.url);
+        verificationUrl.searchParams.set(
+          'callbackURL',
+          `${process.env.CLIENT_URL ?? 'http://localhost:5173'}/sign-in?verified=true`,
+        );
+        await sendEmail({
+          to: opts.user.email,
+          subject: 'Verify your email address',
+          html: `<p>Welcome! Click the link below to verify your email address.</p>
+                 <a href="${verificationUrl.toString()}">Verify email</a>`,
+        });
+      } catch { /* email delivery failure — non-blocking */ }
     },
   },
 

@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { and, asc, desc, eq, gt, inArray, lt, max, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, lt, max, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { shoppingList, shoppingListCategory, shoppingListItem, shoppingListItemImage } from '../schema/shopping';
@@ -7,7 +7,7 @@ import { ingredient } from '../schema/ingredient';
 import { user } from '../schema/auth';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
-import { upload } from '../lib/upload';
+import { upload, validateImageBuffer } from '../lib/upload';
 import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
 
 const router = Router();
@@ -146,8 +146,11 @@ router.delete('/categories/:id', async (req, res) => {
 
 // ─── Item routes ──────────────────────────────────────────────────────────────
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 router.get('/items', async (req, res) => {
-  const categoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
+  const rawCategoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
+  const categoryId = rawCategoryId && UUID_RE.test(rawCategoryId) ? rawCategoryId : undefined;
   const addedByUserId = typeof req.query.addedByUserId === 'string' ? req.query.addedByUserId : undefined;
   const isChecked =
     req.query.isChecked === 'true' ? true
@@ -363,6 +366,20 @@ router.post('/items/:id/images', upload.single('image'), async (req: Request, re
   const item = itemRows.rows[0];
   if (!item || item.shopping_list_id !== req.shoppingListId) { res.status(404).json({ error: 'Item not found' }); return; }
   if (!req.file) { res.status(400).json({ error: 'No image uploaded' }); return; }
+
+  if (!validateImageBuffer(req.file.buffer)) {
+    res.status(400).json({ error: 'Invalid image file' });
+    return;
+  }
+
+  const [{ count: imgCount }] = await db
+    .select({ count: count() })
+    .from(shoppingListItemImage)
+    .where(eq(shoppingListItemImage.itemId, item.id));
+  if (Number(imgCount) >= 10) {
+    res.status(400).json({ error: 'Maximum 10 images per shopping list item' });
+    return;
+  }
 
   const url = await uploadImage(req.file.buffer, `shopping-list-items/${item.id}`);
 

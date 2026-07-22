@@ -9,7 +9,8 @@ router.use(requireAuth);
 
 // GET /api/ingredients/search?name= — autocomplete for ingredient names
 router.get('/search', async (req, res) => {
-  const name = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+  const rawName = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+  const name = rawName.slice(0, 200);
 
   if (name.length < 2) {
     res.status(400).json({ error: 'Search term must be at least 2 characters' });

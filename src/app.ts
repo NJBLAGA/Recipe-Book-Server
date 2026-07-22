@@ -3,11 +3,14 @@ import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
+import multer from 'multer';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import routes from './routes';
 
 const app = express();
+
+app.set('trust proxy', 1);
 
 app.use(helmet());
 
@@ -34,6 +37,14 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api', routes);
+
+app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (err instanceof multer.MulterError) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  next(err);
+});
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error(err.stack);

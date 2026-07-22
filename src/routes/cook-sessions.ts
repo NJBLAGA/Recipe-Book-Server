@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { recipe, recipeBook, recipeCook, recipeCookImage, recipeCategory } from '../schema/recipe';
@@ -9,7 +9,7 @@ import { pantry, pantryItem } from '../schema/pantry';
 import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
-import { upload } from '../lib/upload';
+import { upload, validateImageBuffer } from '../lib/upload';
 import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
 
 const router = Router();
@@ -44,9 +44,12 @@ const pendingChangesSchema = z.object({
 
 // ─── Cook session routes ──────────────────────────────────────────────────────
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // GET /api/cook-sessions — completed cook history for the current user
 router.get('/', async (req, res) => {
-  const recipeId = typeof req.query.recipeId === 'string' ? req.query.recipeId : undefined;
+  const rawRecipeId = typeof req.query.recipeId === 'string' ? req.query.recipeId : undefined;
+  const recipeId = rawRecipeId && UUID_RE.test(rawRecipeId) ? rawRecipeId : undefined;
 
   const conditions = [
     eq(recipeCook.userId, req.user.id),
@@ -151,7 +154,8 @@ router.get('/household-in-progress', async (req, res) => {
 // GET /api/cook-sessions/active — current user's IN_PROGRESS session (optional ?recipeId)
 // Registered before /:id so Express doesn't match "active" as a param
 router.get('/active', async (req, res) => {
-  const recipeId = typeof req.query.recipeId === 'string' ? req.query.recipeId : undefined;
+  const rawRecipeId = typeof req.query.recipeId === 'string' ? req.query.recipeId : undefined;
+  const recipeId = rawRecipeId && UUID_RE.test(rawRecipeId) ? rawRecipeId : undefined;
 
   const conditions = [
     eq(recipeCook.userId, req.user.id),
@@ -282,7 +286,7 @@ router.post('/:id/complete', async (req, res) => {
       quantity: z.number().int().min(1).max(999).nullable().optional(),
       unit: z.string().trim().max(50).nullable().optional(),
       notes: z.string().trim().max(500).nullable().optional(),
-    })).optional(),
+    })).max(200).optional(),
     servings: z.number().int().positive().nullable().optional(),
   }).safeParse(req.body);
 
@@ -398,6 +402,20 @@ router.post('/:id/images', upload.single('image'), async (req, res) => {
   if (!session) { res.status(404).json({ error: 'Cook session not found' }); return; }
   if (session.status !== 'COMPLETED') { res.status(400).json({ error: 'Photos can only be added to completed sessions' }); return; }
   if (!req.file) { res.status(400).json({ error: 'Image file is required' }); return; }
+
+  if (!validateImageBuffer(req.file.buffer)) {
+    res.status(400).json({ error: 'Invalid image file' });
+    return;
+  }
+
+  const [{ count: imgCount }] = await db
+    .select({ count: count() })
+    .from(recipeCookImage)
+    .where(eq(recipeCookImage.recipeCookId, sessionId));
+  if (Number(imgCount) >= 10) {
+    res.status(400).json({ error: 'Maximum 10 photos per cook session' });
+    return;
+  }
 
   const url = await uploadImage(req.file.buffer, `cook-images/${req.user.id}`);
   const [image] = await db

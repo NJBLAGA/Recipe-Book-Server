@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { Request } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { and, asc, avg, count, desc, eq, gte, ilike, inArray, isNotNull, lte, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
@@ -8,6 +10,16 @@ import { recipe, recipeBook, recipeImage, recipeIngredient, recipeCategory } fro
 import { ingredient } from '../schema/ingredient';
 import { householdUser } from '../schema/household';
 import { requireAuth } from '../middleware/requireAuth';
+import { textIsClean } from '../lib/moderation';
+
+const postLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  keyGenerator: (req) => (req as Request).user?.id ?? 'unknown',
+  message: { error: 'Too many posts — please wait before posting again' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const router = Router();
 router.use(requireAuth);
@@ -19,11 +31,11 @@ router.get('/posts', async (req, res) => {
   const fromParam = typeof req.query.from === 'string' ? new Date(req.query.from) : null;
   const toParam = typeof req.query.to === 'string' ? new Date(req.query.to) : null;
   const rawIngredients = req.query.ingredients;
-  const ingredientFilters: string[] = Array.isArray(rawIngredients)
+  const ingredientFilters: string[] = (Array.isArray(rawIngredients)
     ? (rawIngredients as string[]).map((v) => v.trim()).filter(Boolean)
     : typeof rawIngredients === 'string'
       ? rawIngredients.split(',').map((v) => v.trim()).filter(Boolean)
-      : [];
+      : []).slice(0, 50);
 
   const baseWhere = or(eq(user.isPublic, true), eq(communityPost.userId, req.user.id))!;
   const conditions = [baseWhere];
@@ -214,9 +226,11 @@ router.get('/posts/following', async (req, res) => {
     userName: row.userIsPublic ? row.userName : null,
     userHandle: row.userIsPublic ? row.userHandle : null,
     userImage: row.userIsPublic ? row.userImage : null,
-    recipeImages: row.recipeId ? (imageMap.get(row.recipeId) ?? []) : [],
-    reviewCount: row.recipeId ? (reviewMap.get(row.recipeId)?.count ?? 0) : 0,
-    recipeAvgRating: row.recipeId ? (reviewMap.get(row.recipeId)?.avg ?? null) : null,
+    recipeTitle: row.userIsPublic ? row.recipeTitle : null,
+    recipeDescription: row.userIsPublic ? row.recipeDescription : null,
+    recipeImages: row.recipeId && row.userIsPublic ? (imageMap.get(row.recipeId) ?? []) : [],
+    reviewCount: row.recipeId && row.userIsPublic ? (reviewMap.get(row.recipeId)?.count ?? 0) : 0,
+    recipeAvgRating: row.recipeId && row.userIsPublic ? (reviewMap.get(row.recipeId)?.avg ?? null) : null,
     isOwnPost: row.userId === req.user.id,
     isFollowing: true,
     sameHousehold: viewerHouseholdId !== null && posterHouseholdMap.get(row.userId) === viewerHouseholdId,
@@ -226,13 +240,26 @@ router.get('/posts/following', async (req, res) => {
 // ─── GET /api/community/posts/:postId/recipe — recipe detail for modal ────────
 router.get('/posts/:postId/recipe', async (req, res) => {
   const [post] = await db
-    .select({ recipeId: communityPost.recipeId })
+    .select({ recipeId: communityPost.recipeId, userId: communityPost.userId })
     .from(communityPost)
     .where(eq(communityPost.id, req.params.postId))
     .limit(1);
 
   if (!post) { res.status(404).json({ error: 'Post not found' }); return; }
   if (!post.recipeId) { res.status(404).json({ error: 'Recipe no longer available' }); return; }
+
+  // Only return recipe details if the poster is public or is the requesting user
+  if (post.userId !== req.user.id) {
+    const [poster] = await db
+      .select({ isPublic: user.isPublic })
+      .from(user)
+      .where(eq(user.id, post.userId))
+      .limit(1);
+    if (!poster?.isPublic) {
+      res.status(403).json({ error: 'This post is from a private user' });
+      return;
+    }
+  }
 
   const [r] = await db
     .select({
@@ -278,12 +305,21 @@ router.get('/posts/:postId/recipe', async (req, res) => {
 // ─── GET /api/community/posts/:postId/recipe/reviews — all reviews for the recipe ──
 router.get('/posts/:postId/recipe/reviews', async (req, res) => {
   const [post] = await db
-    .select({ recipeId: communityPost.recipeId })
+    .select({ recipeId: communityPost.recipeId, userId: communityPost.userId })
     .from(communityPost)
     .where(eq(communityPost.id, req.params.postId))
     .limit(1);
 
   if (!post?.recipeId) { res.json([]); return; }
+
+  if (post.userId !== req.user.id) {
+    const [poster] = await db
+      .select({ isPublic: user.isPublic })
+      .from(user)
+      .where(eq(user.id, post.userId))
+      .limit(1);
+    if (!poster?.isPublic) { res.status(403).json({ error: 'This post is from a private user' }); return; }
+  }
 
   const rows = await db
     .select({
@@ -306,7 +342,7 @@ router.get('/posts/:postId/recipe/reviews', async (req, res) => {
 });
 
 // ─── POST /api/community/posts — create a community post ─────────────────────
-router.post('/posts', async (req, res) => {
+router.post('/posts', postLimiter, async (req, res) => {
   const parsed = z.object({
     recipeId: z.string().uuid(),
     comment: z.string().trim().min(1, 'Comment is required').max(1000),
@@ -323,6 +359,11 @@ router.post('/posts', async (req, res) => {
     .limit(1);
 
   if (!owned) { res.status(403).json({ error: 'Recipe not found in your household' }); return; }
+
+  if (!textIsClean(parsed.data.comment)) {
+    res.status(422).json({ error: 'Comment contains inappropriate content' });
+    return;
+  }
 
   const [created] = await db
     .insert(communityPost)

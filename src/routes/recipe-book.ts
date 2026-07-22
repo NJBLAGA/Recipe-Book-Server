@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { lookup as dnsLookup } from 'dns/promises';
-import { and, asc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { load } from 'cheerio';
 import { rateLimit } from 'express-rate-limit';
@@ -13,6 +13,7 @@ import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
 import { upload } from '../lib/upload';
 import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
+import { validateImageBuffer } from '../lib/upload';
 import { findOrCreateIngredient } from '../lib/ingredient';
 import {
   extractRecipeFromImages,
@@ -151,7 +152,7 @@ const categorySchema = z.object({
 });
 
 const ingredientInputSchema = z.object({
-  name: z.string().trim().min(1, 'Ingredient name is required'),
+  name: z.string().trim().min(1, 'Ingredient name is required').max(200),
   quantity: z.number().positive().nullable().default(null),
   unit: z.string().trim().max(50).nullable().default(null),
   note: z.string().trim().max(500).nullable().default(null),
@@ -160,8 +161,8 @@ const ingredientInputSchema = z.object({
 
 // Accept legacy string steps or new object format — normalise to objects
 const stepInput = z.union([
-  z.string().trim().min(1),
-  z.object({ text: z.string().trim().min(1), subSteps: z.array(z.string().trim()).default([]) }),
+  z.string().trim().min(1).max(5000),
+  z.object({ text: z.string().trim().min(1).max(5000), subSteps: z.array(z.string().trim().max(2000)).max(20).default([]) }),
 ]).transform((s): { text: string; subSteps: string[] } =>
   typeof s === 'string' ? { text: s, subSteps: [] } : s
 );
@@ -172,8 +173,8 @@ const createRecipeSchema = z.object({
   source: z.string().trim().min(1, 'Source is required').max(500),
   baseServings: z.number().int().positive('Base servings must be a positive number'),
   categoryId: z.string().uuid().nullable().optional(),
-  steps: z.array(stepInput).min(1, 'At least one step is required'),
-  ingredients: z.array(ingredientInputSchema).min(1, 'At least one ingredient is required'),
+  steps: z.array(stepInput).min(1, 'At least one step is required').max(200),
+  ingredients: z.array(ingredientInputSchema).min(1, 'At least one ingredient is required').max(200),
 });
 
 const updateRecipeSchema = createRecipeSchema.partial();
@@ -183,7 +184,7 @@ const reorderImagesSchema = z.array(
     id: z.string().uuid(),
     sortOrder: z.number().int().min(0),
   })
-).min(1);
+).min(1).max(20);
 
 // ─── Scan route ───────────────────────────────────────────────────────────────
 
@@ -219,8 +220,8 @@ router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) =
 
 // POST /api/recipe-book/extract-text
 // Accepts raw pasted text and extracts a recipe via the text model.
-router.post('/extract-text', async (req, res) => {
-  const parsed = z.object({ text: z.string().min(1, 'Text is required') }).safeParse(req.body);
+router.post('/extract-text', scanLimiter, async (req, res) => {
+  const parsed = z.object({ text: z.string().min(1, 'Text is required').max(50_000) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0].message });
     return;
@@ -248,7 +249,7 @@ router.post('/extract-text', async (req, res) => {
 // POST /api/recipe-book/import-url
 // 1. Fetches the page and looks for a JSON-LD Recipe schema (no API call needed).
 // 2. If not found, strips noise and sends the page text to the extraction model as a fallback.
-router.post('/import-url', async (req, res) => {
+router.post('/import-url', scanLimiter, async (req, res) => {
   const parsed = z.object({ url: z.string().url('A valid URL is required') }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0].message });
@@ -652,16 +653,20 @@ router.get('/can-make', async (req, res) => {
 
 // ─── Recipe routes ────────────────────────────────────────────────────────────
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // GET /api/recipe-book/recipes
 router.get('/recipes', async (req, res) => {
-  const categoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
-  const search = typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
+  const rawCategoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
+  const categoryId = rawCategoryId && UUID_RE.test(rawCategoryId) ? rawCategoryId : undefined;
+  const rawSearch = typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
+  const search = rawSearch ? rawSearch.slice(0, 200) : undefined;
   const rawIngredients = req.query.ingredients;
-  const ingredientFilters: string[] = Array.isArray(rawIngredients)
+  const ingredientFilters: string[] = (Array.isArray(rawIngredients)
     ? (rawIngredients as string[]).map((v) => v.trim()).filter(Boolean)
     : typeof rawIngredients === 'string'
       ? rawIngredients.split(',').map((v) => v.trim()).filter(Boolean)
-      : [];
+      : []).slice(0, 50);
 
   const strict = req.query.strict === 'true';
 
@@ -1000,6 +1005,20 @@ router.post('/recipes/:id/images', upload.single('image'), async (req, res) => {
 
   if (!req.file) {
     res.status(400).json({ error: 'Image file is required' });
+    return;
+  }
+
+  if (!validateImageBuffer(req.file.buffer)) {
+    res.status(400).json({ error: 'Invalid image file' });
+    return;
+  }
+
+  const [{ count: imgCount }] = await db
+    .select({ count: count() })
+    .from(recipeImage)
+    .where(eq(recipeImage.recipeId, recipeId));
+  if (Number(imgCount) >= 20) {
+    res.status(400).json({ error: 'Maximum 20 images per recipe' });
     return;
   }
 

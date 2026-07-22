@@ -10,7 +10,8 @@ import { ingredient } from '../schema/ingredient';
 import { recipeShare } from '../schema/social';
 import { review } from '../schema/social';
 import { requireAuth } from '../middleware/requireAuth';
-import { upload } from '../lib/upload';
+import { textIsClean } from '../lib/moderation';
+import { upload, validateImageBuffer } from '../lib/upload';
 import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
 
 const router = Router();
@@ -63,9 +64,24 @@ router.patch('/me', async (req, res) => {
     if (taken) { res.status(409).json({ error: 'Handle is already taken' }); return; }
   }
 
-  const first = firstName !== undefined ? (firstName ?? '') : (req.user.firstName ?? '');
-  const last = lastName !== undefined ? (lastName ?? '') : (req.user.lastName ?? '');
-  const derivedName = [first, last].filter(Boolean).join(' ') || req.user.name;
+  const fieldsToCheck = [firstName, lastName, bio].filter((v): v is string => typeof v === 'string' && v.length > 0);
+  if (fieldsToCheck.some((v) => !textIsClean(v))) {
+    res.status(422).json({ error: 'Profile contains inappropriate content' });
+    return;
+  }
+
+  // Fetch current DB values as authoritative fallbacks — session data may be stale
+  let derivedName: string | undefined;
+  if (firstName !== undefined || lastName !== undefined) {
+    const [current] = await db
+      .select({ firstName: user.firstName, lastName: user.lastName, name: user.name })
+      .from(user)
+      .where(eq(user.id, req.user.id))
+      .limit(1);
+    const first = firstName !== undefined ? (firstName ?? '') : (current?.firstName ?? '');
+    const last = lastName !== undefined ? (lastName ?? '') : (current?.lastName ?? '');
+    derivedName = [first, last].filter(Boolean).join(' ') || (current?.name ?? req.user.name);
+  }
 
   const [updated] = await db
     .update(user)
@@ -76,7 +92,7 @@ router.patch('/me', async (req, res) => {
       ...(bio !== undefined && { bio }),
       ...(theme !== undefined && { theme }),
       ...(isPublic !== undefined && { isPublic }),
-      name: derivedName,
+      ...(derivedName !== undefined && { name: derivedName }),
       updatedAt: new Date(),
     })
     .where(eq(user.id, req.user.id))
@@ -99,6 +115,11 @@ router.patch('/me', async (req, res) => {
 router.post('/me/picture', upload.single('image'), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'Image file is required' }); return; }
 
+  if (!validateImageBuffer(req.file.buffer)) {
+    res.status(400).json({ error: 'Invalid image file' });
+    return;
+  }
+
   if (req.user.image?.includes('cloudinary.com')) {
     const oldPublicId = extractPublicId(req.user.image);
     if (oldPublicId) await deleteImage(oldPublicId).catch(() => {});
@@ -117,7 +138,7 @@ router.post('/me/picture', upload.single('image'), async (req, res) => {
 
 // GET /api/users/community — public users browsable in the community tab
 router.get('/community', async (req, res) => {
-  const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  const search = (typeof req.query.search === 'string' ? req.query.search.trim() : '').slice(0, 100);
 
   const conditions = [isNotNull(user.handle), eq(user.isPublic, true)];
   if (search.length >= 2) conditions.push(ilike(user.handle, `%${search}%`));
@@ -144,7 +165,7 @@ router.get('/community', async (req, res) => {
 
 // GET /api/users/search?handle= — find users by handle (only public profiles)
 router.get('/search', async (req, res) => {
-  const handle = typeof req.query.handle === 'string' ? req.query.handle.trim() : '';
+  const handle = (typeof req.query.handle === 'string' ? req.query.handle.trim() : '').slice(0, 100);
   if (handle.length < 2) { res.status(400).json({ error: 'Search term must be at least 2 characters' }); return; }
 
   const results = await db
@@ -184,6 +205,10 @@ router.get('/:handle', async (req, res) => {
     .limit(1);
 
   if (!profile) { res.status(404).json({ error: 'User not found' }); return; }
+  if (!profile.isPublic && profile.id !== req.user.id) {
+    res.status(403).json({ error: 'This profile is private' });
+    return;
+  }
 
   const pins = await db
     .select({

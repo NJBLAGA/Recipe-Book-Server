@@ -302,13 +302,13 @@ router.post('/:id/invites', async (req, res) => {
     return;
   }
 
-  const [h] = await db
-    .select({ name: household.name })
-    .from(household)
-    .where(eq(household.id, householdId))
-    .limit(1);
-
   const result = await db.transaction(async (tx) => {
+    const [h] = await tx
+      .select({ name: household.name })
+      .from(household)
+      .where(eq(household.id, householdId))
+      .limit(1);
+
     const [invite] = await tx
       .insert(householdJoinRequest)
       .values({
@@ -325,7 +325,7 @@ router.post('/:id/invites', async (req, res) => {
       payload: {
         joinRequestId: invite.id,
         householdId,
-        householdName: h.name,
+        householdName: h?.name,
         invitedByUserId: req.user.id,
         invitedByName: req.user.name,
       },

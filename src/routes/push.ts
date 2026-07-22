@@ -6,6 +6,13 @@ import { pushSubscription, pushTimer } from '../schema/push';
 import { requireAuth } from '../middleware/requireAuth';
 import { scheduleTimer, cancelTimer } from '../lib/timer-scheduler';
 
+const ALLOWED_PUSH_DOMAINS = [
+  'googleapis.com',
+  'push.services.mozilla.com',
+  'notify.windows.com',
+  'push.apple.com',
+];
+
 const router = Router();
 router.use(requireAuth);
 
@@ -26,6 +33,21 @@ router.post('/subscribe', async (req, res) => {
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
   const { endpoint, keys } = parsed.data;
+
+  try {
+    const endpointUrl = new URL(endpoint);
+    const hostname = endpointUrl.hostname.toLowerCase();
+    const isAllowed = ALLOWED_PUSH_DOMAINS.some(
+      (d) => hostname === d || hostname.endsWith(`.${d}`)
+    );
+    if (!isAllowed) {
+      res.status(400).json({ error: 'Invalid push endpoint' });
+      return;
+    }
+  } catch {
+    res.status(400).json({ error: 'Invalid push endpoint URL' });
+    return;
+  }
 
   await db
     .insert(pushSubscription)

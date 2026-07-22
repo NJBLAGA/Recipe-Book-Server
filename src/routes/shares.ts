@@ -8,6 +8,7 @@ import { user } from '../schema/auth';
 import { householdUser, household } from '../schema/household';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
+import { textIsClean } from '../lib/moderation';
 
 const router = Router();
 router.use(requireAuth);
@@ -165,6 +166,15 @@ router.post('/request', async (req, res) => {
 
   if (!r) { res.status(404).json({ error: 'Recipe not found or does not belong to that user' }); return; }
 
+  // Block requests to private profiles
+  const [ownerUser] = await db
+    .select({ isPublic: user.isPublic })
+    .from(user)
+    .where(eq(user.id, ownerId))
+    .limit(1);
+  if (!ownerUser) { res.status(404).json({ error: 'User not found' }); return; }
+  if (!ownerUser.isPublic) { res.status(403).json({ error: 'This user\'s profile is private' }); return; }
+
   // Block requests to household members — they already have access
   const [ownerHousehold] = await db
     .select({ householdId: householdUser.householdId })
@@ -226,13 +236,14 @@ router.post('/', async (req, res) => {
     .limit(1);
   if (!r) { res.status(404).json({ error: 'Recipe not found' }); return; }
 
-  // Verify recipient exists
+  // Verify recipient exists and has a public profile
   const [recipient] = await db
-    .select({ id: user.id })
+    .select({ id: user.id, isPublic: user.isPublic })
     .from(user)
     .where(eq(user.id, parsed.data.toUserId))
     .limit(1);
   if (!recipient) { res.status(404).json({ error: 'Recipient not found' }); return; }
+  if (!recipient.isPublic) { res.status(403).json({ error: "This user's profile is private" }); return; }
 
   // Don't allow duplicate pending shares
   const [existingShare] = await db
@@ -338,6 +349,11 @@ router.post('/:id/accept-with-name', async (req, res) => {
   const parsed = z.object({ title: z.string().trim().min(1).max(255) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
+  if (!textIsClean(parsed.data.title)) {
+    res.status(422).json({ error: 'Title contains inappropriate content' });
+    return;
+  }
+
   const [share] = await db
     .select()
     .from(recipeShare)
@@ -394,6 +410,11 @@ router.post('/:id/recopy-with-name', async (req, res) => {
   const parsed = z.object({ title: z.string().trim().min(1).max(255) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
+  if (!textIsClean(parsed.data.title)) {
+    res.status(422).json({ error: 'Title contains inappropriate content' });
+    return;
+  }
+
   const [share] = await db
     .select()
     .from(recipeShare)
@@ -430,16 +451,28 @@ router.post('/:id/fulfill-request', async (req, res) => {
   if (share.status !== 'REQUESTED') { res.status(400).json({ error: 'This is not a pending recipe request' }); return; }
   if (!share.recipeId) { res.status(410).json({ error: 'Recipe no longer available' }); return; }
 
+  const [ownedRecipe] = await db
+    .select({ id: recipe.id })
+    .from(recipe)
+    .where(and(eq(recipe.id, share.recipeId), eq(recipe.recipeBookId, req.recipeBookId)))
+    .limit(1);
+  if (!ownedRecipe) { res.status(403).json({ error: 'Recipe not found in your household' }); return; }
+
   await db.transaction(async (tx) => {
-    await tx.insert(recipeShare).values({
+    const [newShare] = await tx.insert(recipeShare).values({
       recipeId: share.recipeId,
       fromUserId: req.user.id,
       toUserId: share.fromUserId,
       status: 'PENDING',
-    });
+    }).returning();
     await tx.update(recipeShare)
       .set({ status: 'ACCEPTED', updatedAt: new Date() })
       .where(eq(recipeShare.id, share.id));
+    await tx.insert(notification).values({
+      userId: share.fromUserId,
+      type: 'RECIPE_SHARED',
+      payload: { shareId: newShare.id, fromUserId: req.user.id, fromUserName: req.user.name },
+    });
   });
 
   res.json({ message: 'Request fulfilled — recipe shared' });
@@ -515,6 +548,11 @@ router.post('/:shareId/review', async (req, res) => {
     .limit(1);
   if (existing) { res.status(409).json({ error: 'You have already reviewed this share — use PATCH to update it' }); return; }
 
+  if (parsed.data.comment && !textIsClean(parsed.data.comment)) {
+    res.status(422).json({ error: 'Review contains inappropriate content' });
+    return;
+  }
+
   const [created] = await db
     .insert(review)
     .values({ shareId: share.id, rating: parsed.data.rating, comment: parsed.data.comment ?? null })
@@ -548,6 +586,11 @@ router.patch('/:shareId/review', async (req, res) => {
     .where(eq(review.shareId, share.id))
     .limit(1);
   if (!existing) { res.status(404).json({ error: 'No review found — use POST to create one' }); return; }
+
+  if (parsed.data.comment && !textIsClean(parsed.data.comment)) {
+    res.status(422).json({ error: 'Review contains inappropriate content' });
+    return;
+  }
 
   const { rating, comment } = parsed.data;
 

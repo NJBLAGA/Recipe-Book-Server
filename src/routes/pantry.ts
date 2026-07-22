@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { pantry, pantryCategory, pantryItem, pantryItemImage } from '../schema/pantry';
@@ -7,7 +7,7 @@ import { ingredient } from '../schema/ingredient';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireHousehold } from '../middleware/requireHousehold';
 import { findOrCreateIngredient } from '../lib/ingredient';
-import { upload } from '../lib/upload';
+import { upload, validateImageBuffer } from '../lib/upload';
 import { uploadImage, deleteImage, extractPublicId } from '../lib/cloudinary';
 
 const router = Router();
@@ -32,7 +32,7 @@ const categorySchema = z.object({
 });
 
 const createItemSchema = z.object({
-  name: z.string().trim().min(1, 'Ingredient name is required'),
+  name: z.string().trim().min(1, 'Ingredient name is required').max(200),
   categoryId: z.string().uuid({ message: 'Category is required' }),
   inStock: z.boolean().default(true),
   quantity: z.number().int().min(1).max(999).nullable().optional(),
@@ -123,8 +123,11 @@ router.delete('/categories/:id', async (req, res) => {
 
 // ─── Item routes ──────────────────────────────────────────────────────────────
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 router.get('/items', async (req, res) => {
-  const categoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
+  const rawCategoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
+  const categoryId = rawCategoryId && UUID_RE.test(rawCategoryId) ? rawCategoryId : undefined;
 
   const conditions = [eq(pantryItem.pantryId, req.pantryId)];
   if (categoryId) conditions.push(eq(pantryItem.categoryId, categoryId));
@@ -323,6 +326,20 @@ router.post('/items/:id/images', upload.single('image'), async (req, res) => {
   if (!item) { res.status(404).json({ error: 'Item not found' }); return; }
 
   if (!req.file) { res.status(400).json({ error: 'Image file is required' }); return; }
+
+  if (!validateImageBuffer(req.file.buffer)) {
+    res.status(400).json({ error: 'Invalid image file' });
+    return;
+  }
+
+  const [{ count: imgCount }] = await db
+    .select({ count: count() })
+    .from(pantryItemImage)
+    .where(eq(pantryItemImage.pantryItemId, itemId));
+  if (Number(imgCount) >= 10) {
+    res.status(400).json({ error: 'Maximum 10 images per pantry item' });
+    return;
+  }
 
   const url = await uploadImage(req.file.buffer, `pantry-images/${req.householdId}`);
   const [image] = await db
