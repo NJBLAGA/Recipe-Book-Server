@@ -169,6 +169,7 @@ const stepInput = z.union([
 const createRecipeSchema = z.object({
   title: z.string().trim().min(1, 'Title is required').max(200),
   description: z.string().trim().max(2000).optional(),
+  source: z.string().trim().min(1, 'Source is required').max(500),
   baseServings: z.number().int().positive('Base servings must be a positive number'),
   categoryId: z.string().uuid().nullable().optional(),
   steps: z.array(stepInput).min(1, 'At least one step is required'),
@@ -187,8 +188,8 @@ const reorderImagesSchema = z.array(
 // ─── Scan route ───────────────────────────────────────────────────────────────
 
 // POST /api/recipe-book/scan
-// Accepts 1–10 ordered images, extracts a recipe via vision model, returns the
-// pre-filled recipe shape for the frontend review form. Images are never stored.
+// Accepts 1–10 ordered images, extracts a recipe, and returns the pre-filled
+// recipe shape for the frontend review form. Images are never stored.
 router.post('/scan', scanLimiter, upload.array('images', 10), async (req, res) => {
   const files = req.files as Express.Multer.File[] | undefined;
 
@@ -511,6 +512,7 @@ router.get('/pins', async (req, res) => {
       recipeId: userPinnedRecipe.recipeId,
       recipeTitle: recipe.title,
       recipeDescription: recipe.description,
+      recipeSource: recipe.source,
       recipeImage: sql<string | null>`(SELECT url FROM recipe_image WHERE recipe_id = ${recipe.id} ORDER BY sort_order ASC LIMIT 1)`,
     })
     .from(userPinnedRecipe)
@@ -694,6 +696,7 @@ router.get('/recipes', async (req, res) => {
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
+      source: recipe.source,
       baseServings: recipe.baseServings,
       categoryId: recipe.categoryId,
       categoryName: recipeCategory.name,
@@ -730,7 +733,7 @@ router.post('/recipes', async (req, res) => {
     return;
   }
 
-  const { title, description, baseServings, categoryId, steps, ingredients } = parsed.data;
+  const { title, description, source, baseServings, categoryId, steps, ingredients } = parsed.data;
 
   if (!textIsClean(title)) {
     res.status(400).json({ error: 'Recipe contains inappropriate content' });
@@ -763,6 +766,7 @@ router.post('/recipes', async (req, res) => {
         recipeBookId: req.recipeBookId,
         title,
         description,
+        source,
         baseServings,
         categoryId: categoryId ?? null,
         steps,
@@ -798,6 +802,7 @@ router.get('/recipes/:id', async (req, res) => {
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
+      source: recipe.source,
       baseServings: recipe.baseServings,
       categoryId: recipe.categoryId,
       categoryName: recipeCategory.name,
@@ -872,7 +877,7 @@ router.patch('/recipes/:id', async (req, res) => {
     return;
   }
 
-  const { title, description, baseServings, categoryId, steps, ingredients } = parsed.data;
+  const { title, description, source, baseServings, categoryId, steps, ingredients } = parsed.data;
 
   if (title !== undefined && !textIsClean(title)) {
     res.status(400).json({ error: 'Recipe contains inappropriate content' });
@@ -904,6 +909,7 @@ router.patch('/recipes/:id', async (req, res) => {
       .set({
         ...(title !== undefined && { title }),
         ...(description !== undefined && { description }),
+        ...(source !== undefined && { source }),
         ...(baseServings !== undefined && { baseServings }),
         ...(categoryId !== undefined && { categoryId: categoryId ?? null }),
         ...(steps !== undefined && { steps }),

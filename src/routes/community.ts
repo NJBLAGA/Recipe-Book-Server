@@ -53,6 +53,7 @@ router.get('/posts', async (req, res) => {
       recipeId: communityPost.recipeId,
       recipeTitle: recipe.title,
       recipeDescription: recipe.description,
+      recipeSource: recipe.source,
     })
     .from(communityPost)
     .innerJoin(user, eq(communityPost.userId, user.id))
@@ -238,6 +239,7 @@ router.get('/posts/:postId/recipe', async (req, res) => {
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
+      source: recipe.source,
       baseServings: recipe.baseServings,
       steps: recipe.steps,
       categoryName: recipeCategory.name,

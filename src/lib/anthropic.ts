@@ -48,12 +48,28 @@ export interface ExtractedRecipe {
   ingredients: ExtractedIngredient[];
 }
 
+// Removes "page N" references from ingredient text.
+// Handles: "— page 57, or …" → "— …", "(page 57)" → "", "page 57" → "".
+function stripPageRefs(s: string): string {
+  return s
+    // "— page N, or " → "— " (keep dash separator, drop page ref + "or")
+    .replace(/([—–\-])\s*page\s+\d+\s*,\s*or\s+/gi, '$1 ')
+    // "— page N," or "— page N" (no following "or") → remove dash + ref
+    .replace(/\s*[—–\-]\s*page\s+\d+\s*,?/gi, '')
+    // "(page N)" in parens
+    .replace(/\s*\(page\s+\d+\)\s*,?/gi, '')
+    // any remaining standalone "page N"
+    .replace(/,?\s*\bpage\s+\d+\b\s*,?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 // Cleans extracted ingredient names:
 //   "onion (, finely chopped (white, yellow or brown))" → name: "onion", note: "finely chopped, white, yellow or brown"
 // Strips leading junk chars from names, pulls parenthetical content into note.
 export function cleanIngredient(raw: ExtractedIngredient): ExtractedIngredient {
-  let name = raw.name.trim();
-  let note = raw.note?.trim() ?? null;
+  let name = stripPageRefs(raw.name.trim());
+  let note = raw.note ? stripPageRefs(raw.note.trim()) : null;
 
   // Pull parenthetical qualifiers out of the name into note
   const parenMatch = name.match(/^([^(,]+?)\s*[,(]+\s*(.*?)\s*[)]*$/s);
@@ -163,7 +179,7 @@ function parseModelResponse(message: Anthropic.Message): ExtractedRecipe {
   // Find first JSON object in the response
   const jsonMatch = deferred.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    console.error('[anthropic] No JSON object found in model response:', raw.slice(0, 500));
+    console.error('[extraction] No JSON object found in model response:', raw.slice(0, 500));
     throw new Error('No JSON object in model response');
   }
 
@@ -171,14 +187,14 @@ function parseModelResponse(message: Anthropic.Message): ExtractedRecipe {
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch (e) {
-    console.error('[anthropic] JSON.parse failed:', e, '\nRaw:', jsonMatch[0].slice(0, 500));
+    console.error('[extraction] JSON.parse failed:', e, '\nRaw:', jsonMatch[0].slice(0, 500));
     throw new Error('Could not parse recipe JSON from model response');
   }
 
   const validation = extractedRecipeSchema.safeParse(parsed);
   if (!validation.success) {
-    console.error('[anthropic] Schema validation failed:', JSON.stringify(validation.error.issues));
-    console.error('[anthropic] Parsed object:', JSON.stringify(parsed).slice(0, 500));
+    console.error('[extraction] Schema validation failed:', JSON.stringify(validation.error.issues));
+    console.error('[extraction] Parsed object:', JSON.stringify(parsed).slice(0, 500));
     throw new Error('Extracted recipe has an unexpected shape');
   }
 

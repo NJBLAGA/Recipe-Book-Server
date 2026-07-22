@@ -1,77 +1,81 @@
-# Recipe Book App — Backend
+# Recipe Book — Backend
 
-Node.js · Express · TypeScript · Drizzle ORM · Neon (PostgreSQL) · better-auth
-
-> **This is a living document.** Updated as the build progresses — architecture, API routes, schema changes, and design decisions are recorded here.
+Node.js · Express · TypeScript · Drizzle ORM · Neon · better-auth
 
 ---
 
-## Table of Contents
+## Purpose
 
-1. [ERD — Full Schema](#1-erd--full-schema)
-2. [Domain Diagrams](#2-domain-diagrams)
-3. [Table Reference](#3-table-reference)
-4. [Enums](#4-enums)
-5. [Key Invariants & Design Decisions](#5-key-invariants--design-decisions)
-6. [Architecture](#6-architecture)
-7. [Setup](#7-setup)
-8. [API Routes](#8-api-routes)
+REST API for a household recipe management app. Handles authentication, household membership, recipe storage, pantry tracking, shopping lists, recipe sharing, cook sessions, and automated recipe extraction from images and URLs.
 
 ---
 
-## 1. ERD — Full Schema
+## Tech Stack
+
+| Library | Why |
+|---|---|
+| **Node.js + Express** | Lightweight, well-understood request/response model. Express gives full control over middleware ordering — important for the auth and CORS sequencing this app requires. |
+| **TypeScript** | End-to-end type safety; shared Zod schemas with the frontend eliminate duplicated validation logic. |
+| **Drizzle ORM** | Schema-as-TypeScript with first-class migrations. Queries stay close to SQL; `drizzle-zod` generates Zod schemas from table definitions automatically. |
+| **Neon (PostgreSQL)** | Serverless PostgreSQL with instant branch-per-test-environment support. Scales to zero between dev sessions. |
+| **better-auth** | Handles email/password + Google OAuth, sessions, email verification, and password reset out of the box. Auth tables are CLI-generated; the app only adds fields via `additionalFields`. |
+| **Resend** | Transactional email (verification, password reset) with reliable delivery and a simple API. |
+| **Cloudinary** | Hosted image CDN. Only URLs are stored in the database — no binary data in Postgres. |
+| **multer** | Multipart file handling for image uploads. Memory storage for scan images (never persisted); stream-to-Cloudinary for recipe and pantry photos. |
+
+---
+
+## Features
+
+### Households
+Every user belongs to exactly one household. A household owns one recipe book, one pantry, and one shopping list — shared by all its members. Households have a single owner; ownership can be transferred atomically. Membership flows via invite or join-request, both of which generate in-app notifications. When the last member leaves, the household and all its data are deleted.
+
+### Recipe Book
+Full CRUD on recipes organised into user-created categories. Each recipe stores a title, description, base serving count, ordered steps, and a structured ingredients list. Ingredients reference a canonical global ingredient table — the entity that connects recipes to pantry stock and shopping list entries. Recipes can be added manually, extracted from uploaded images, or imported from a URL.
+
+### Serving Scaling & Measurement Conversion
+Recipes are stored at a base serving count. Displayed quantities scale proportionally; measurements convert between metric and imperial on request. Both are display-only — stored values never change.
+
+### Pantry
+Tracks household stock organised by category. Each pantry item can have multiple batches, each with a fill level (0 / 25 / 50 / 75 / 100%). Effective stock is the sum of all batch fill levels for that item. Items can be pushed to the shopping list.
+
+### "What Can I Make?"
+Matches every recipe in the household's book against current pantry stock and returns three tiers: ready to cook (all measurable ingredients in stock), almost there (1–2 missing, with a one-tap shopping list action), and the rest ranked by match percentage.
+
+### Shopping List
+A household-shared list. Items can originate from recipe ingredients, pantry items, or direct free-text entry. Organised into user-created categories.
+
+### Cook Sessions
+An explicit start → complete flow. Pantry changes are queued in a `pendingChanges` JSONB column as the user ticks ingredients — nothing is written to the pantry until the session is confirmed. Confirmation applies all queued updates in a single atomic transaction. Sessions are persisted from the moment cooking starts, so the user can resume across devices.
+
+### Sharing & Reviews
+A user can share any recipe in their household's book with any other user. The recipient accepts or rejects; on accept, an independent copy is created in the recipient's household's book. Share history is permanent — it outlives both the original and the copy via `SET NULL` foreign keys. Recipients can leave one review per share (1–5 stars + optional comment), which surfaces on the original recipe as an aggregate rating.
+
+### Social
+Users have public profiles with searchable handles. Following another user is a contact-list feature that populates the share dialog's quick-pick list. An in-app notification inbox covers recipe shares, household invites, and join requests.
+
+### Recipe Extraction
+Images (up to 10 per scan) and recipe page URLs are processed to extract structured recipe data — title, description, base servings, steps, and ingredients with quantities and units — which pre-fills the recipe form for user review before saving. Scan images are ephemeral and never stored.
+
+---
+
+## Data Model
 
 ```mermaid
 erDiagram
 
-  %% ── AUTH (generated by better-auth CLI) ──────────────────────────
   user {
     text id PK
     text name
     text email UK
-    boolean emailVerified
-    text image "nullable"
     text handle UK "nullable"
-    timestamp createdAt
-    timestamp updatedAt
+    text image "nullable"
+    text bio "nullable"
+    text theme "nullable"
   }
-  session {
-    text id PK
-    text userId FK
-    text token UK
-    timestamp expiresAt
-    text ipAddress "nullable"
-    text userAgent "nullable"
-    timestamp createdAt
-    timestamp updatedAt
-  }
-  account {
-    text id PK
-    text userId FK
-    text accountId
-    text providerId
-    text accessToken "nullable"
-    text refreshToken "nullable"
-    text idToken "nullable"
-    text password "nullable"
-    timestamp createdAt
-    timestamp updatedAt
-  }
-  verification {
-    text id PK
-    text identifier
-    text value
-    timestamp expiresAt
-    timestamp createdAt
-    timestamp updatedAt
-  }
-
-  %% ── HOUSEHOLD & MEMBERSHIP ────────────────────────────────────────
   household {
     uuid id PK
     text name
-    timestamp createdAt
-    timestamp updatedAt
   }
   household_user {
     uuid id PK
@@ -87,28 +91,19 @@ erDiagram
     text initiatedByUserId FK
     join_type type "INVITE | REQUEST"
     request_status status "PENDING | ACCEPTED | DECLINED | CANCELLED"
-    timestamp createdAt
-    timestamp updatedAt
   }
-
-  %% ── CANONICAL INGREDIENT ──────────────────────────────────────────
   ingredient {
     uuid id PK
-    text name UK "normalised lowercase"
-    timestamp createdAt
+    text name UK "normalised lowercase — global, not household-scoped"
   }
-
-  %% ── RECIPE BOOK ───────────────────────────────────────────────────
   recipe_book {
     uuid id PK
     uuid householdId FK "UNIQUE"
-    timestamp createdAt
   }
   recipe_category {
     uuid id PK
     uuid recipeBookId FK
-    text name "UNIQUE per book"
-    timestamp createdAt
+    text name
   }
   recipe {
     uuid id PK
@@ -118,11 +113,8 @@ erDiagram
     text description "nullable"
     integer baseServings
     jsonb steps
-    text photoUrl "nullable"
-    text sharedByUserId FK "nullable"
-    uuid originalRecipeId FK "nullable – self-ref"
-    timestamp createdAt
-    timestamp updatedAt
+    text sharedByUserId "nullable"
+    uuid originalRecipeId "nullable — self-ref"
   }
   recipe_ingredient {
     uuid id PK
@@ -133,336 +125,38 @@ erDiagram
     text note "nullable"
     integer sortOrder
   }
-
-  %% ── PANTRY ────────────────────────────────────────────────────────
+  recipe_image {
+    uuid id PK
+    uuid recipeId FK
+    text url
+    integer sortOrder
+  }
   pantry {
     uuid id PK
     uuid householdId FK "UNIQUE"
-    timestamp createdAt
   }
   pantry_category {
     uuid id PK
     uuid pantryId FK
-    text name "UNIQUE per pantry"
-    timestamp createdAt
+    text name
   }
   pantry_item {
     uuid id PK
     uuid pantryId FK
     uuid ingredientId FK "UNIQUE per pantry"
     uuid categoryId FK "nullable"
-    timestamp createdAt
-    timestamp updatedAt
   }
   pantry_batch {
     uuid id PK
     uuid pantryItemId FK
     smallint fillLevel "0 | 25 | 50 | 75 | 100"
-    timestamp createdAt
-    timestamp updatedAt
-  }
-
-  %% ── SHOPPING LIST ─────────────────────────────────────────────────
-  shopping_list {
-    uuid id PK
-    uuid householdId FK "UNIQUE"
-    timestamp createdAt
-  }
-  shopping_list_category {
-    uuid id PK
-    uuid shoppingListId FK
-    text name "UNIQUE per list"
-    timestamp createdAt
-  }
-  shopping_list_item {
-    uuid id PK
-    uuid shoppingListId FK
-    uuid categoryId FK "nullable"
-    uuid ingredientId FK "nullable"
-    text name
-    numeric quantity "nullable"
-    text unit "nullable"
-    boolean isChecked
-    item_source source "nullable – RECIPE | PANTRY | DIRECT"
-    timestamp createdAt
-    timestamp updatedAt
-  }
-
-  %% ── SHARING, REVIEWS, FOLLOWS, NOTIFICATIONS ──────────────────────
-  recipe_image {
-    uuid id PK
-    uuid recipeId FK
-    text url
-    integer sortOrder
-    timestamp createdAt
-  }
-  recipe_cook {
-    uuid id PK
-    text userId FK
-    uuid recipeId FK "nullable"
-    cook_status status "IN_PROGRESS | COMPLETED | CANCELLED"
-    jsonb pendingChanges "nullable"
-    text note "nullable"
-    timestamp cookedAt
-  }
-  recipe_cook_image {
-    uuid id PK
-    uuid recipeCookId FK
-    text url
-    integer sortOrder
-    timestamp createdAt
   }
   pantry_item_image {
     uuid id PK
     uuid pantryItemId FK
     text url
     integer sortOrder
-    timestamp createdAt
   }
-  recipe_share {
-    uuid id PK
-    uuid recipeId FK "nullable"
-    text fromUserId FK
-    text toUserId FK
-    share_status status "PENDING | ACCEPTED | REJECTED"
-    uuid copiedRecipeId FK "nullable"
-    timestamp createdAt
-    timestamp updatedAt
-  }
-  review {
-    uuid id PK
-    uuid shareId FK "UNIQUE"
-    smallint rating "1–5"
-    text comment "nullable"
-    timestamp createdAt
-    timestamp updatedAt
-  }
-  follow {
-    text followerId FK
-    text followingId FK
-    timestamp createdAt
-  }
-  notification {
-    uuid id PK
-    text userId FK
-    notification_type type
-    jsonb payload
-    timestamp readAt "nullable"
-    timestamp createdAt
-  }
-  user_pinned_recipe {
-    text userId FK
-    uuid recipeId FK "nullable – SET NULL on delete"
-    integer position "1–5"
-    timestamp createdAt
-  }
-
-  %% ── RELATIONSHIPS ─────────────────────────────────────────────────
-  user ||--o{ session : "has"
-  user ||--o{ account : "has"
-  user ||--o{ household_user : "member via"
-  household ||--o{ household_user : "has members via"
-  household ||--|| recipe_book : "owns"
-  household ||--|| pantry : "owns"
-  household ||--|| shopping_list : "owns"
-  household ||--o{ household_join_request : "receives"
-  user ||--o{ household_join_request : "is target of"
-  user ||--o{ household_join_request : "initiates"
-
-  recipe_book ||--o{ recipe_category : "has"
-  recipe_book ||--o{ recipe : "contains"
-  recipe_category ||--o{ recipe : "organises"
-  recipe ||--o{ recipe_ingredient : "has"
-  recipe_ingredient }o--|| ingredient : "references"
-
-  pantry ||--o{ pantry_category : "has"
-  pantry ||--o{ pantry_item : "tracks"
-  pantry_category ||--o{ pantry_item : "organises"
-  pantry_item }o--|| ingredient : "references"
-  pantry_item ||--o{ pantry_batch : "has batches"
-
-  shopping_list ||--o{ shopping_list_category : "has"
-  shopping_list ||--o{ shopping_list_item : "contains"
-  shopping_list_category ||--o{ shopping_list_item : "organises"
-  shopping_list_item }o--o| ingredient : "optionally references"
-
-  user ||--o{ recipe_share : "sends"
-  user ||--o{ recipe_share : "receives"
-  recipe ||--o{ recipe_share : "shared via"
-  recipe_share ||--o| review : "has"
-
-  user ||--o{ follow : "follows"
-  user ||--o{ follow : "followed by"
-
-  user ||--o{ notification : "receives"
-  user ||--o{ recipe_cook : "has"
-  user ||--o{ user_pinned_recipe : "pins"
-
-  recipe ||--o| recipe : "copied from (self-ref)"
-  recipe ||--o{ recipe_image : "has"
-  recipe ||--o{ recipe_cook : "cooked via"
-  recipe_cook ||--o{ recipe_cook_image : "has"
-  pantry_item ||--o{ pantry_item_image : "has"
-```
-
----
-
-## 2. Domain Diagrams
-
-### Household & Membership
-
-```mermaid
-erDiagram
-  user {
-    text id PK
-    text email UK
-    text handle UK
-  }
-  household {
-    uuid id PK
-    text name
-  }
-  household_user {
-    uuid id PK
-    uuid householdId FK
-    text userId FK "UNIQUE"
-    household_role role "OWNER | USER"
-    timestamp joinedAt
-  }
-  household_join_request {
-    uuid id PK
-    uuid householdId FK
-    text userId FK
-    text initiatedByUserId FK
-    join_type type "INVITE | REQUEST"
-    request_status status
-  }
-
-  user ||--o{ household_user : "member via"
-  household ||--o{ household_user : "has members via"
-  household ||--o{ household_join_request : "has pending"
-  user ||--o{ household_join_request : "is target of"
-```
-
-### Recipe Book
-
-```mermaid
-erDiagram
-  recipe_book {
-    uuid id PK
-    uuid householdId FK "UNIQUE"
-  }
-  recipe_category {
-    uuid id PK
-    uuid recipeBookId FK
-    text name
-  }
-  recipe {
-    uuid id PK
-    uuid recipeBookId FK
-    uuid categoryId FK "nullable"
-    text title
-    integer baseServings
-    jsonb steps
-  }
-  recipe_image {
-    uuid id PK
-    uuid recipeId FK
-    text url
-    integer sortOrder
-  }
-  recipe_ingredient {
-    uuid id PK
-    uuid recipeId FK
-    uuid ingredientId FK
-    numeric quantity "nullable"
-    text unit "nullable"
-    text note "nullable"
-    integer sortOrder
-  }
-  ingredient {
-    uuid id PK
-    text name UK
-  }
-
-  recipe_book ||--o{ recipe_category : "has"
-  recipe_book ||--o{ recipe : "contains"
-  recipe_category ||--o{ recipe : "organises"
-  recipe ||--o{ recipe_image : "has"
-  recipe ||--o{ recipe_ingredient : "has"
-  recipe_ingredient }o--|| ingredient : "references"
-```
-
-### Cook Sessions
-
-```mermaid
-erDiagram
-  recipe_cook {
-    uuid id PK
-    text userId FK
-    uuid recipeId FK "nullable – SET NULL on delete"
-    cook_status status "IN_PROGRESS | COMPLETED | CANCELLED"
-    jsonb pendingChanges "nullable"
-    text note "nullable"
-    timestamp cookedAt
-  }
-  recipe_cook_image {
-    uuid id PK
-    uuid recipeCookId FK
-    text url
-    integer sortOrder
-  }
-  user_pinned_recipe {
-    text userId FK
-    uuid recipeId FK "nullable – SET NULL on delete"
-    integer position "1–5"
-  }
-
-  recipe_cook ||--o{ recipe_cook_image : "has"
-  user ||--o{ recipe_cook : "has"
-  user ||--o{ user_pinned_recipe : "pins"
-```
-
-### Pantry
-
-```mermaid
-erDiagram
-  pantry {
-    uuid id PK
-    uuid householdId FK "UNIQUE"
-  }
-  pantry_category {
-    uuid id PK
-    uuid pantryId FK
-    text name
-  }
-  pantry_item {
-    uuid id PK
-    uuid pantryId FK
-    uuid ingredientId FK "UNIQUE per pantry"
-    uuid categoryId FK "nullable"
-  }
-  pantry_batch {
-    uuid id PK
-    uuid pantryItemId FK
-    smallint fillLevel "0|25|50|75|100"
-  }
-  ingredient {
-    uuid id PK
-    text name UK
-  }
-
-  pantry ||--o{ pantry_category : "has"
-  pantry ||--o{ pantry_item : "tracks"
-  pantry_category ||--o{ pantry_item : "organises"
-  pantry_item }o--|| ingredient : "references"
-  pantry_item ||--o{ pantry_batch : "has batches"
-```
-
-### Shopping List
-
-```mermaid
-erDiagram
   shopping_list {
     uuid id PK
     uuid householdId FK "UNIQUE"
@@ -481,38 +175,15 @@ erDiagram
     numeric quantity "nullable"
     text unit "nullable"
     boolean isChecked
-    item_source source "nullable"
-  }
-  ingredient {
-    uuid id PK
-    text name UK
-  }
-
-  shopping_list ||--o{ shopping_list_category : "has"
-  shopping_list ||--o{ shopping_list_item : "contains"
-  shopping_list_category ||--o{ shopping_list_item : "organises"
-  shopping_list_item }o--o| ingredient : "optionally references"
-```
-
-### Sharing, Reviews & Social
-
-```mermaid
-erDiagram
-  user {
-    text id PK
-    text handle UK
-  }
-  recipe {
-    uuid id PK
-    text title
+    item_source source "nullable — RECIPE | PANTRY | DIRECT"
   }
   recipe_share {
     uuid id PK
-    uuid recipeId FK "nullable"
+    uuid recipeId FK "nullable — SET NULL on delete"
     text fromUserId FK
     text toUserId FK
-    share_status status
-    uuid copiedRecipeId FK "nullable"
+    share_status status "PENDING | ACCEPTED | REJECTED"
+    uuid copiedRecipeId FK "nullable — SET NULL on delete"
   }
   review {
     uuid id PK
@@ -531,671 +202,90 @@ erDiagram
     jsonb payload
     timestamp readAt "nullable"
   }
+  recipe_cook {
+    uuid id PK
+    text userId FK
+    uuid recipeId FK "nullable — SET NULL on delete"
+    cook_status status "IN_PROGRESS | COMPLETED | CANCELLED"
+    jsonb pendingChanges "nullable"
+    text note "nullable"
+    timestamp cookedAt
+  }
+  recipe_cook_image {
+    uuid id PK
+    uuid recipeCookId FK
+    text url
+    integer sortOrder
+  }
+  user_pinned_recipe {
+    text userId FK
+    uuid recipeId FK "nullable — SET NULL on delete"
+    integer position "1–5"
+  }
+
+  user ||--o{ household_user : "member via"
+  household ||--o{ household_user : "has members via"
+  household ||--|| recipe_book : "owns"
+  household ||--|| pantry : "owns"
+  household ||--|| shopping_list : "owns"
+  household ||--o{ household_join_request : "receives"
+  user ||--o{ household_join_request : "is target of / initiates"
+
+  recipe_book ||--o{ recipe_category : "has"
+  recipe_book ||--o{ recipe : "contains"
+  recipe_category ||--o{ recipe : "organises"
+  recipe ||--o{ recipe_ingredient : "has"
+  recipe_ingredient }o--|| ingredient : "references"
+  recipe ||--o{ recipe_image : "has"
+  recipe ||--o| recipe : "copied from (self-ref)"
+
+  pantry ||--o{ pantry_category : "has"
+  pantry ||--o{ pantry_item : "tracks"
+  pantry_category ||--o{ pantry_item : "organises"
+  pantry_item }o--|| ingredient : "references"
+  pantry_item ||--o{ pantry_batch : "has batches"
+  pantry_item ||--o{ pantry_item_image : "has"
+
+  shopping_list ||--o{ shopping_list_category : "has"
+  shopping_list ||--o{ shopping_list_item : "contains"
+  shopping_list_category ||--o{ shopping_list_item : "organises"
+  shopping_list_item }o--o| ingredient : "optionally references"
 
   user ||--o{ recipe_share : "sends"
   user ||--o{ recipe_share : "receives"
   recipe ||--o{ recipe_share : "shared via"
   recipe_share ||--o| review : "has"
-  user ||--o{ follow : "follows others via"
-  user ||--o{ follow : "followed by others via"
+  user ||--o{ follow : "follows"
   user ||--o{ notification : "receives"
+  user ||--o{ recipe_cook : "has"
+  user ||--o{ user_pinned_recipe : "pins"
+  recipe ||--o{ recipe_cook : "cooked via"
+  recipe_cook ||--o{ recipe_cook_image : "has"
 ```
 
 ---
 
-## 3. Table Reference
+## Key Design Principles
 
-### Auth tables — generated by better-auth CLI
+**Global ingredient table** — `ingredient` is not scoped to any household. It is the shared canonical reference that lets recipe ingredients, pantry items, and shopping list entries all resolve to the same entity. This is what powers pantry-status indicators on recipe ingredients, "What can I make?" matching, and list aggregation.
 
-| Table | Purpose |
-|---|---|
-| `user` | Core identity. `handle` is added via `additionalFields` for the public directory. |
-| `session` | Active login sessions. |
-| `account` | Provider links — `password` column holds bcrypt hash for email/password logins; Google OAuth rows have `providerId = 'google'`. |
-| `verification` | Email verification and magic-link tokens. |
+**Household as the authorisation boundary** — every resource has a path back to `household_id`. Authentication is always one middleware question: "is this user a member of the household that owns this resource?"
 
----
+**Exactly one owner per household** — enforced by a partial unique index (`UNIQUE WHERE role = 'OWNER'`). Ownership transfer is an atomic swap. There is no `ownerId` column on `household` — ownership is a role on the membership row.
 
-### `household`
+**Cook sessions defer pantry writes** — pending changes accumulate in a `pendingChanges` JSONB column throughout a cook session and are only applied to the pantry in a single atomic transaction when the session is confirmed. Cancelling discards local state with no database cleanup needed.
 
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `name` | text | NOT NULL |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
+**Sharing is copy-on-accept** — accepting a share creates an independent copy of the recipe in the recipient's household. Share history and reviews survive deletion of both the original and the copy via `SET NULL` foreign keys.
+
+**Middleware order** — `helmet → cors → rate limit → better-auth handler → express.json() → routes`. CORS must precede the auth handler so browser preflight requests resolve before any credentialed request. The auth handler must precede `express.json()` — a documented requirement of better-auth.
 
 ---
 
-### `household_user`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `householdId` | uuid | FK → household (CASCADE) |
-| `userId` | text | FK → user; UNIQUE |
-| `role` | enum | `OWNER \| USER` |
-| `joinedAt` | timestamp | |
-
-Partial unique index: `UNIQUE (householdId) WHERE role = 'OWNER'` — enforces exactly one owner per household.
-
----
-
-### `household_join_request`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `householdId` | uuid | FK → household (CASCADE) |
-| `userId` | text | FK → user (target) |
-| `initiatedByUserId` | text | FK → user |
-| `type` | enum | `INVITE \| REQUEST` |
-| `status` | enum | `PENDING \| ACCEPTED \| DECLINED \| CANCELLED` |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `ingredient`
-
-Global — not scoped to any household. Normalised to lowercase before insert.
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `name` | text | UNIQUE |
-| `createdAt` | timestamp | |
-
----
-
-### `recipe_book`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `householdId` | uuid | FK → household (CASCADE); UNIQUE |
-| `createdAt` | timestamp | |
-
----
-
-### `recipe_category`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `recipeBookId` | uuid | FK → recipe_book (CASCADE) |
-| `name` | text | UNIQUE(recipeBookId, name) |
-| `createdAt` | timestamp | |
-
----
-
-### `recipe`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `recipeBookId` | uuid | FK → recipe_book (CASCADE) |
-| `categoryId` | uuid | FK → recipe_category; nullable (SET NULL) |
-| `title` | text | NOT NULL |
-| `description` | text | nullable |
-| `baseServings` | integer | NOT NULL |
-| `steps` | jsonb | Ordered array of step strings |
-| `photoUrl` | text | nullable |
-| `sharedByUserId` | text | FK → user; nullable |
-| `originalRecipeId` | uuid | FK → recipe (self-ref); nullable |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `recipe_ingredient`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `recipeId` | uuid | FK → recipe (CASCADE) |
-| `ingredientId` | uuid | FK → ingredient |
-| `quantity` | numeric | nullable — null = non-scalable ingredient |
-| `unit` | text | nullable |
-| `note` | text | nullable |
-| `sortOrder` | integer | NOT NULL |
-
----
-
-### `recipe_image`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `recipeId` | uuid | FK → recipe (CASCADE) |
-| `url` | text | Cloudinary URL |
-| `sortOrder` | integer | NOT NULL, default 0 |
-| `createdAt` | timestamp | |
-
----
-
-### `recipe_cook`
-
-Persisted from the moment "Start Cooking" is pressed. `pendingChanges` accumulates pantry updates as the user ticks ingredients — nothing is written to the pantry until the session is completed.
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `userId` | text | FK → user (CASCADE) |
-| `recipeId` | uuid | FK → recipe; nullable (SET NULL on delete) |
-| `status` | enum | `IN_PROGRESS \| COMPLETED \| CANCELLED` |
-| `pendingChanges` | jsonb | `{ ticked, pantryChanges, extraChanges }` — nullable |
-| `note` | text | nullable — user note added after completion |
-| `cookedAt` | timestamp | |
-
----
-
-### `recipe_cook_image`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `recipeCookId` | uuid | FK → recipe_cook (CASCADE) |
-| `url` | text | Cloudinary URL |
-| `sortOrder` | integer | NOT NULL, default 0 |
-| `createdAt` | timestamp | |
-
----
-
-### `pantry`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `householdId` | uuid | FK → household (CASCADE); UNIQUE |
-| `createdAt` | timestamp | |
-
----
-
-### `pantry_category`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `pantryId` | uuid | FK → pantry (CASCADE) |
-| `name` | text | UNIQUE(pantryId, name) |
-| `createdAt` | timestamp | |
-
----
-
-### `pantry_item`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `pantryId` | uuid | FK → pantry (CASCADE) |
-| `ingredientId` | uuid | FK → ingredient; UNIQUE(pantryId, ingredientId) |
-| `categoryId` | uuid | FK → pantry_category; nullable (SET NULL) |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `pantry_batch`
-
-Effective stock per item = `SUM(fillLevel)` across all its batches.
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `pantryItemId` | uuid | FK → pantry_item (CASCADE) |
-| `fillLevel` | smallint | CHECK IN (0, 25, 50, 75, 100) |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `pantry_item_image`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `pantryItemId` | uuid | FK → pantry_item (CASCADE) |
-| `url` | text | Cloudinary URL |
-| `sortOrder` | integer | NOT NULL, default 0 |
-| `createdAt` | timestamp | |
-
----
-
-### `shopping_list`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `householdId` | uuid | FK → household (CASCADE); UNIQUE |
-| `createdAt` | timestamp | |
-
----
-
-### `shopping_list_category`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `shoppingListId` | uuid | FK → shopping_list (CASCADE) |
-| `name` | text | UNIQUE(shoppingListId, name) |
-| `createdAt` | timestamp | |
-
----
-
-### `shopping_list_item`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `shoppingListId` | uuid | FK → shopping_list (CASCADE) |
-| `categoryId` | uuid | FK → shopping_list_category; nullable (SET NULL) |
-| `ingredientId` | uuid | FK → ingredient; nullable |
-| `name` | text | NOT NULL |
-| `quantity` | numeric | nullable |
-| `unit` | text | nullable |
-| `isChecked` | boolean | NOT NULL, default false |
-| `source` | enum | nullable — `RECIPE \| PANTRY \| DIRECT` |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `recipe_share`
-
-Both recipe FKs use SET NULL so share history survives deletion of the original or the copy.
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `recipeId` | uuid | FK → recipe; nullable (SET NULL) |
-| `fromUserId` | text | FK → user |
-| `toUserId` | text | FK → user |
-| `status` | enum | `PENDING \| ACCEPTED \| REJECTED` |
-| `copiedRecipeId` | uuid | FK → recipe; nullable (SET NULL) |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `review`
-
-Anchored to the share, not the recipe directly. Aggregate rating = `AVG(rating)` across all reviews for shares of a given original recipe.
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `shareId` | uuid | FK → recipe_share (CASCADE); UNIQUE |
-| `rating` | smallint | CHECK 1–5 |
-| `comment` | text | nullable |
-| `createdAt` | timestamp | |
-| `updatedAt` | timestamp | |
-
----
-
-### `follow`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `followerId` | text | FK → user; composite PK |
-| `followingId` | text | FK → user; composite PK |
-| `createdAt` | timestamp | |
-
-Constraint: `CHECK (followerId <> followingId)`
-
----
-
-### `notification`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | uuid | PK |
-| `userId` | text | FK → user (CASCADE) |
-| `type` | enum | `RECIPE_SHARED \| HOUSEHOLD_INVITE \| JOIN_REQUEST` |
-| `payload` | jsonb | Per-type data |
-| `readAt` | timestamp | nullable — null = unread |
-| `createdAt` | timestamp | |
-
----
-
-### `user_pinned_recipe`
-
-Up to 5 recipes manually pinned by a user for their public profile. `recipeId` uses SET NULL so a pin slot survives recipe deletion (frontend shows "recipe no longer available").
-
-| Column | Type | Constraints |
-|---|---|---|
-| `userId` | text | FK → user (CASCADE); composite PK with position |
-| `recipeId` | uuid | FK → recipe; nullable (SET NULL); UNIQUE(userId, recipeId) |
-| `position` | integer | CHECK 1–5; composite PK with userId |
-| `createdAt` | timestamp | |
-
----
-
-## 4. Enums
-
-| Enum | Values |
-|---|---|
-| `household_role` | `OWNER`, `USER` |
-| `join_type` | `INVITE`, `REQUEST` |
-| `request_status` | `PENDING`, `ACCEPTED`, `DECLINED`, `CANCELLED` |
-| `share_status` | `PENDING`, `ACCEPTED`, `REJECTED` |
-| `item_source` | `RECIPE`, `PANTRY`, `DIRECT` |
-| `notification_type` | `RECIPE_SHARED`, `HOUSEHOLD_INVITE`, `JOIN_REQUEST` |
-| `cook_status` | `IN_PROGRESS`, `COMPLETED`, `CANCELLED` |
-
----
-
-## 5. Key Invariants & Design Decisions
-
-### Invariants
-
-| Rule | Enforcement |
-|---|---|
-| One household per user | `UNIQUE(household_user.userId)` |
-| Exactly one owner per household | Partial unique index `WHERE role = 'OWNER'`; ownership transfer is a single atomic transaction |
-| One recipe_book per household | `UNIQUE(recipe_book.householdId)` |
-| One pantry per household | `UNIQUE(pantry.householdId)` |
-| One shopping_list per household | `UNIQUE(shopping_list.householdId)` |
-| One pantry_item per ingredient per pantry | `UNIQUE(pantry_item.pantryId, pantry_item.ingredientId)` |
-| One review per share | `UNIQUE(review.shareId)` |
-| Cannot follow yourself | `CHECK(follow.followerId <> follow.followingId)` |
-| Last user leaves → cascade delete | `ON DELETE CASCADE` on household tears down book, pantry, list, and all descendants |
-| Authorization is a single question | Every resource has a path to `household_id`; one middleware check: "is this user a member of that household?" |
-
-### Design decisions
-
-**Global ingredient table** — The `ingredient` table is not scoped to any household. It is the shared reference that connects recipe ingredients, pantry items, and shopping list items so they resolve to the same entity. This is the deliberate exception to the household-scoping rule and is what powers pantry-status indicators, "What can I make?" matching, and list aggregation.
-
-**JSONB for recipe steps** — Steps are always read and written as a unit, so a normalised `recipe_step` table adds joins with no benefit at MVP.
-
-**User-created pantry categories** — `pantry_category` is user-defined for consistency with `recipe_category` and `shopping_list_category`.
-
-**Owner as a role on `household_user`** — Ownership is the row where `role = 'OWNER'`. Transfer is a single atomic `UPDATE`. No `ownerId` column on `household`.
-
-**`handle` as an `additionalField` on `user`** — Added via better-auth configuration, not a separate profile table. Keeps identity in one place.
-
-**Share history is permanent** — `recipe_share.recipeId` uses SET NULL so the share record outlives the original recipe. Recipients retain their history and reviews regardless of what the author does.
-
-**First/last name derived from `firstName` + `lastName` at signup** — `POST /api/auth/sign-up/email` accepts `firstName` and `lastName` as `additionalFields`. The `databaseHooks.user.create.before` hook derives `name = "First Last"` from them when provided, overriding whatever was passed as `name`. This keeps the session's display name in sync with the structured name fields. If neither first nor last is provided (e.g. Google OAuth), the passed `name` is used unchanged.
-
-**Email normalisation on every auth operation** — better-auth `hooks.before` normalises `email` and `newEmail` (for change-email) in the request body before any auth operation. `databaseHooks.user.create/update.before` applies the same normalisation as a safety net at the DB write level. Rules: trim whitespace → lowercase → strip `+tag` for Gmail, Googlemail, Outlook, Hotmail, Live, MSN, Yahoo → remove dots from the local part for Gmail/Googlemail only (dot stripping is a Gmail-specific behaviour; dots are significant on all other providers). Result: `User+tag@Gmail.com`, `u.s.e.r@gmail.com`, and `user@gmail.com` all resolve to the same stored address.
-
-**Change email is two-step (confirmed via old email)** — `POST /api/auth/change-email { newEmail }` sends a confirmation link to the *current* email address via `sendChangeEmailConfirmation`. The email is only changed after the user clicks the link (which calls `/api/auth/verify-email` with a `change-email-confirmation` token). This prevents account hijacking via email typos. `newEmail` is normalised through the same rules as sign-up.
-
-**Delete account enforces the household ownership invariant** — `POST /api/auth/delete-user` runs a `beforeDelete` hook that mirrors the "leave" rule: an owner with other members receives 400 (must transfer ownership first); a sole owner's household is deleted in the hook (cascading all associated data — recipe book, pantry, shopping list, join requests) before the user row is deleted; a regular member's `household_user` row cascades automatically on user deletion.
-
-**`GET /api/households/pending` is enriched** — Both the `invites` and `requests` arrays now include `householdName`, `fromName`, `fromHandle`, `fromImage`. For invites, `fromName/Handle/Image` is the person who sent the invite; for requests, it is the person who wants to join. The field name is neutral across both types so the frontend can render invite/request cards with full context without extra round-trips, using the `type` field to distinguish them.
-
-**`GET /api/users/search` returns household context** — Results now include `householdId` and `householdName` (left-joined; null for users without a household). This enables the "request to join" flow: find a person in the directory → use their `householdId` to POST to `/api/households/:householdId/requests`.
-
-**Category ownership verified before write** — `categoryId` on `pantry_item`, `shopping_list_item`, and `recipe` accepts any FK-valid UUID. Without an explicit ownership check the column would silently accept a category from another household's pantry/list/book, leaking its name back in the JOIN response. All create and update routes now verify that `categoryId` (when non-null) belongs to the current household's pantry, shopping list, or recipe book before inserting or updating.
-
-**`ingredientId` existence check on shopping list item creation** — `shopping_list_item.ingredientId` references `ingredient.id` with no ON DELETE action (defaults to NO ACTION). Inserting a non-existent UUID raises a Postgres FK violation → unhandled 500. The POST handler now verifies the ingredient exists before inserting and returns a clean 400.
-
-**Recipe title uniqueness — not enforced** — No `UNIQUE(recipeBookId, title)` constraint. Households legitimately want variations of the same recipe (e.g. "Bolognese" and "Bolognese — Low Fat"). Recipe names are free-form; uniqueness is a user convention, not a system rule.
-
-**Content moderation on all recipe input paths** — `src/lib/moderation.ts` exposes three functions used across the recipe routes:
-- `urlStringIsClean(url)` — called at `POST /import-url` after the SSRF check; decodes percent-encoding before testing so `%66uck`-style bypasses are caught.
-- `recipeIsClean(extracted)` — called after every extraction (scan and URL import) before returning to the frontend; checks title, description, all ingredient names, all ingredient notes, and all steps.
-- `textIsClean(text)` — called at `POST /recipes` and `PATCH /recipes/:id` before save; checks the title, all ingredient names, all ingredient notes, and all steps. Word-boundary regex anchoring (`\bterm`) prevents food-vocabulary false positives (e.g. "shiitake" or "canal" never match blocked terms).
-All three paths (manual entry, image scan, URL import) are covered: URL strings are checked before fetching; extracted content is checked after extraction; manually submitted recipe fields are checked before insert/update.
-
-**Cloudinary cleanup on row delete** — Before deleting a `recipe` or `pantry_item`, the API fetches all associated image URLs, deletes the DB row (CASCADE removes child image rows), then calls Cloudinary `delete` for each URL. Cloudinary errors are swallowed with `.catch(() => {})` so a Cloudinary outage never blocks a user from deleting a recipe or pantry item. The trade-off is a potential Cloudinary asset orphan on network failure, which is acceptable at MVP scale.
-
-**Pending invites/requests capped at 10** — Before creating a new `HOUSEHOLD_INVITE` or `JOIN_REQUEST`, the route checks that the target user has fewer than 10 pending invites/requests in total. This prevents a household from flooding a user's inbox, and prevents a user from spamming multiple households with join requests.
-
-**Join-request accept is atomic** — The accept handler wraps all side-effects (insert `household_user`, mark request `ACCEPTED`, cancel other pending requests, insert notification) in a single transaction. Inside the transaction, a pre-check verifies the joining user is not already a member of any household, handling the case where two accepts race (e.g. the user accepted another invite between the outer check and the insert). The DB-level `UNIQUE(household_user.userId)` constraint is a second line of defence for the narrow concurrent window; its error code (`23505`) is mapped to a clean 409 response.
-
-**Last-member household delete is atomic** — The check ("are there other members?") and the `DELETE household` are wrapped in a single transaction, preventing a race where an invite is accepted between the member-count check and the delete. If another member joined during that window, the transaction returns a `CONCURRENT_JOIN` sentinel and the route responds with 400 (transfer ownership first).
-
-**Import-URL body is streamed, not buffered** — The response body is read in chunks until 2 MB is accumulated, at which point reading stops. This prevents memory exhaustion from malicious servers that stream large responses without a `Content-Length` header. The existing `Content-Length` pre-check catches declared-large responses before any bytes are read.
-
-**Scan route errors are caught** — `extractRecipeFromImages` can throw (API error, parse failure, schema validation failure). The scan route wraps the call in try/catch and returns 422 so unhandled extraction errors don't reach the Express 500 handler.
-
-**Model response is Zod-validated** — `parseModelResponse` in `src/lib/anthropic.ts` runs `extractedRecipeSchema.safeParse(...)` on the raw JSON response and throws a descriptive error if the shape is wrong. This catches malformed extraction output early rather than letting it propagate into the DB.
-
----
-
-## 6. Architecture
-
-### Middleware order
-
-```
-helmet → cors → rate limit → better-auth handler → express.json() → routes
-```
-
-- **cors** must precede the auth handler so browser preflight (OPTIONS) requests are resolved before any credentialed request.
-- **better-auth handler** must be mounted before `express.json()` — a documented requirement; requests hang otherwise.
-
-### Authorization model
-
-Every app resource carries a path back to `household_id`. The auth check is always: "is the requesting user a member of the household that owns this resource?" Implemented as a single reusable middleware.
-
----
-
-## 7. Setup
+## Setup
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Create .env from the example and fill in all values
-cp .env.example .env
-
-# 3. Run migrations against Neon
+cp .env.example .env   # fill in all required values
 npm run db:migrate
-
-# 4. Start the dev server
 npm run dev
 ```
-
-### Required environment variables
-
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | Neon PostgreSQL connection string |
-| `CLIENT_URL` | Frontend origin for CORS (e.g. `http://localhost:5173`) |
-| `PORT` | Server port (default `3000`) |
-| `BETTER_AUTH_SECRET` | Random secret for better-auth (generate with `openssl rand -base64 32`) |
-| `BETTER_AUTH_URL` | Backend base URL (e.g. `http://localhost:3000`) |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name |
-| `CLOUDINARY_API_KEY` | Cloudinary API key |
-| `CLOUDINARY_API_SECRET` | Cloudinary API secret |
-| `ANTHROPIC_API_KEY` | Anthropic API key (for recipe scan feature) |
-| `RESEND_API_KEY` | Resend API key (for transactional email) |
-| `RESEND_FROM_EMAIL` | From address for emails (requires verified Resend domain; falls back to `onboarding@resend.dev`) |
-
----
-
-## 8. API Routes
-
-All routes under `/api` require authentication unless noted. Auth is checked via the `requireAuth` middleware which validates the session cookie set by better-auth.
-
-### Auth — handled by better-auth at `/api/auth/*`
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/api/auth/sign-up/email` | Register with email + password. Accepts `firstName` and `lastName` as additional fields; `name` is derived from them if both are provided. |
-| POST | `/api/auth/sign-in/email` | Sign in with email + password |
-| POST | `/api/auth/sign-out` | Sign out |
-| GET | `/api/auth/get-session` | Get current session + user |
-| POST | `/api/auth/verify-email` | Verify email address (also handles change-email confirmation tokens) |
-| POST | `/api/auth/forget-password` | Request password reset email |
-| POST | `/api/auth/reset-password` | Reset password with token |
-| POST | `/api/auth/change-email` | Request an email change. Body: `{ newEmail, callbackURL? }`. Sends a confirmation link to the current email address; the email is only changed after the user clicks the link. `newEmail` is normalised through the same email-normalisation rules as sign-up. |
-| POST | `/api/auth/delete-user` | Delete the current user's account. Body: `{ password? }`. Owner-with-members receives 400 (must transfer ownership first). Sole owner's household is deleted first (cascading all data), then the user is removed. Regular members are simply removed. |
-| GET | `/api/auth/sign-in/social?provider=google` | Initiate Google OAuth |
-| GET | `/api/auth/callback/google` | Google OAuth callback |
-
-### Households
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/api/households` | ✓ | Create a household (caller becomes OWNER). Creates household + householdUser + recipeBook + pantry + shoppingList in one transaction. |
-| GET | `/api/households/mine` | ✓ | Get current user's household and their role. 404 if they have none. |
-| GET | `/api/households/pending` | ✓ | Pending invites directed at this user + pending join requests to their household (if they have one). Both arrays include `householdName`, `fromName`, `fromHandle`, `fromImage`. On invites `from*` = the inviter; on requests `from*` = the requester. Use the `type` field to distinguish. |
-| POST | `/api/households/:id/invites` | ✓ member | Send an invite to a user by userId. Target must have no household. |
-| POST | `/api/households/:id/requests` | ✓ no-household | Request to join a household. |
-| POST | `/api/households/join-requests/:id/accept` | ✓ | Accept an invite (invited user only) or join request (any household member). Adds user to household + auto-cancels all their other pending invites/requests. |
-| POST | `/api/households/join-requests/:id/decline` | ✓ | Decline an invite (invited user only) or join request (any household member). |
-| POST | `/api/households/join-requests/:id/cancel` | ✓ | Cancel a pending invite or request. Only the sender (`initiatedByUserId`) can cancel. |
-| POST | `/api/households/:id/transfer-ownership` | ✓ owner | Atomically promote another member to OWNER and demote self to USER. |
-| POST | `/api/households/:id/leave` | ✓ member | Leave the household. Owner must transfer first if other members exist; if last member, household is deleted (CASCADE removes everything). |
-| GET | `/api/households/:id/members` | ✓ member | List all members of a household with name, handle, image, role, joinedAt. |
-
-### Users
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/api/users/me` | ✓ | Get the current user's own profile (id, name, email, handle, firstName, lastName, bio, image, theme, createdAt). |
-| PATCH | `/api/users/me` | ✓ | Update profile fields. Body: `{ handle?, firstName?, lastName?, bio?, theme? }` (all optional). Handle must be 2–40 chars, alphanumeric + underscores. 409 if handle is taken. Updating firstName/lastName also updates the `name` field. |
-| POST | `/api/users/me/picture` | ✓ | Upload a profile picture. `multipart/form-data`, field `image`. Stored in Cloudinary under `profile-pictures/`. Old Cloudinary image is deleted automatically. |
-| GET | `/api/users/search?handle=` | ✓ | Search users by handle (partial, case-insensitive, min 2 chars). Returns id, name, handle, image, `householdId`, `householdName` (both `null` if the user has no household). Used to find people to invite, share recipes with, or request to join their household. |
-| GET | `/api/users/:handle` | ✓ | Public profile for any user. Returns id, name, handle, firstName, lastName, bio, image, createdAt, plus `pins[]` (position, recipeId, recipeTitle — null recipeId means the recipe was deleted). |
-
-### Recipe Book
-
-All recipe-book routes require `requireHousehold` middleware — user must belong to a household. The household's recipe book is resolved automatically (no book ID in the URL).
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/recipe-book/categories` | List all categories in the household's recipe book, ordered alphabetically. |
-| POST | `/api/recipe-book/categories` | Create a category. Body: `{ name }`. 409 if name already exists in this book. |
-| PATCH | `/api/recipe-book/categories/:id` | Rename a category. Body: `{ name }`. |
-| DELETE | `/api/recipe-book/categories/:id` | Delete a category. Recipes in it have categoryId SET NULL automatically. |
-| GET | `/api/recipe-book/recipes` | List recipes. Optional query params: `categoryId`, `search` (title). Returns title, description, baseServings, category. |
-| POST | `/api/recipe-book/recipes` | Create a recipe with ingredients. Body: `{ title, description?, baseServings, categoryId?, steps[], ingredients[] }`. Ingredient names are normalised and find-or-created in the global ingredient table. All inserts are atomic. |
-| GET | `/api/recipe-book/recipes/:id` | Full recipe detail: all fields + ingredients (with names) + images. |
-| PATCH | `/api/recipe-book/recipes/:id` | Update a recipe. All fields optional. If `ingredients` is included, existing ingredients are replaced entirely. |
-| DELETE | `/api/recipe-book/recipes/:id` | Delete a recipe (CASCADE removes ingredients + images). |
-| POST | `/api/recipe-book/recipes/:id/images` | Upload an image for a recipe. `multipart/form-data`, field name `image`. Max 10MB, images only. Stores in Cloudinary, saves URL to `recipe_image`. |
-| PATCH | `/api/recipe-book/recipes/:id/images/order` | Reorder images. Body: `[{ id, sortOrder }]`. |
-| DELETE | `/api/recipe-book/recipes/:id/images/:imageId` | Delete an image from Cloudinary and the DB. |
-| GET | `/api/recipe-book/pins` | Get the current user's pinned recipes (up to 5). Returns `[{ position, recipeId, recipeTitle, recipeDescription }]` ordered by position. `recipeId` and `recipeTitle` are null if the recipe was deleted. |
-| PUT | `/api/recipe-book/pins` | Replace all pins atomically. Body: `[{ position, recipeId }]`, max 5 entries, positions 1–5, no duplicates. Validates all recipeIds exist in the household's book. |
-| GET | `/api/recipe-book/can-make` | Match all recipes against the current pantry stock. No-quantity ingredients ("a pinch of salt") are never counted against a recipe. Returns `{ ready: [], almost: [], rest: [] }`. `ready` = all measurable ingredients in stock; `almost` = 1–2 missing (with `missingIngredients` list and `matchPct`); `rest` = remaining recipes sorted by `matchPct` descending. |
-| POST | `/api/recipe-book/scan` | Extract a recipe from 1–10 uploaded images (e.g. cookbook pages, handwritten cards). `multipart/form-data`, field `images[]`, max 10 files, max 10 MB each, images only. Images are sent to the vision model and never stored. Extracted content is checked for inappropriate material before returning. Returns `{ title, description, baseServings, steps[], ingredients[] }` for the frontend review form. **Rate limited to 20 requests per hour per user.** |
-| POST | `/api/recipe-book/import-url` | Import a recipe from a URL. Body: `{ url }`. SSRF-protected (private/loopback addresses blocked). URL string checked for inappropriate content before fetching (percent-encoding decoded first). Fetches with 10-second timeout. First attempts to parse a JSON-LD `Recipe` schema from the page (no API call needed). If not found, strips navigation/noise and sends the page text to the extraction model as a fallback. Response body capped at 2 MB (Content-Length check + hard truncation). Extracted content checked for inappropriate material before returning. Returns the same shape as `/scan`. 422 if the page cannot be fetched or no recipe can be extracted. |
-
-### Ingredients
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/ingredients/search?name=` | Autocomplete search across the global ingredient table (partial, case-insensitive, min 2 chars, max 20 results). |
-
-### Pantry
-
-All pantry routes require `requireHousehold`. The household's pantry is resolved automatically.
-
-**Fill levels** are restricted to `0 | 25 | 50 | 75 | 100`. **Effective stock** for a pantry item = sum of all its batch fill levels (computed in the response, not stored).
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/pantry/categories` | List pantry categories alphabetically. |
-| POST | `/api/pantry/categories` | Create a category. Body: `{ name }`. 409 if name already exists. |
-| PATCH | `/api/pantry/categories/:id` | Rename a category. Body: `{ name }`. |
-| DELETE | `/api/pantry/categories/:id` | Delete a category. Items in it have categoryId SET NULL. |
-| GET | `/api/pantry/items` | List all pantry items with ingredient name, category, batches, and effectiveStock. Optional `?categoryId` filter. Two-query pattern: items then batches, grouped in app. |
-| POST | `/api/pantry/items` | Add an ingredient to the pantry. Body: `{ ingredientName, categoryId?, fillLevel? }` (fillLevel defaults to 100). Creates the item + an initial batch. 409 if ingredient already in pantry. |
-| GET | `/api/pantry/items/:id` | Full item detail: ingredient name, category, batches, effectiveStock, images. |
-| PATCH | `/api/pantry/items/:id` | Update an item's category. Body: `{ categoryId }`. |
-| DELETE | `/api/pantry/items/:id` | Delete a pantry item (CASCADE removes batches + images). |
-| POST | `/api/pantry/items/:id/batches` | Add a new batch to an item. Body: `{ fillLevel }`. |
-| PATCH | `/api/pantry/batches/:id` | Update a batch's fill level. Body: `{ fillLevel }`. Verifies the batch belongs to this household via JOIN. |
-| DELETE | `/api/pantry/batches/:id` | Delete a batch. 400 if it's the last batch — delete the item instead. |
-| POST | `/api/pantry/items/:id/images` | Upload an image for a pantry item. `multipart/form-data`, field `image`. Max 10MB. Stored in Cloudinary under `pantry-images/{householdId}`. |
-| DELETE | `/api/pantry/items/:id/images/:imageId` | Delete a pantry item image from Cloudinary and the DB. |
-
-### Shopping List
-
-All shopping list routes require `requireHousehold`. The household's shopping list is resolved automatically.
-
-Items can originate from three sources (`source` field): `RECIPE` (added from a recipe ingredient), `PANTRY` (added from a pantry item), or `DIRECT` (manually entered). The `ingredientId` field links to the canonical ingredient when the source is recipe or pantry; it is `null` for direct free-text entries.
-
-`quantity` is stored as `numeric` in PostgreSQL and returned as a string — parse it to a number on the frontend.
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/shopping-list/categories` | List shopping list categories alphabetically. |
-| POST | `/api/shopping-list/categories` | Create a category. Body: `{ name }`. 409 if name already exists. |
-| PATCH | `/api/shopping-list/categories/:id` | Rename a category. Body: `{ name }`. |
-| DELETE | `/api/shopping-list/categories/:id` | Delete a category. Items in it have categoryId SET NULL. |
-| GET | `/api/shopping-list/items` | List all items with category name. Optional `?categoryId` and `?isChecked=true\|false` filters. Ordered by category name then item name. |
-| POST | `/api/shopping-list/items` | Add an item. Body: `{ name, categoryId?, ingredientId?, quantity?, unit?, source? }`. |
-| PATCH | `/api/shopping-list/items/:id` | Update an item. All fields optional: `name`, `categoryId`, `quantity`, `unit`, `isChecked`. |
-| DELETE | `/api/shopping-list/items/checked` | Clear all checked items from the list. |
-| DELETE | `/api/shopping-list/items/:id` | Delete a single item. |
-
-### Cook Sessions
-
-Cook sessions are user-scoped (not household-scoped). The user must belong to a household whose recipe book contains the recipe.
-
-**Flow:** Start → tick ingredients mid-cook (each tick saves a pending pantry change to `pendingChanges` JSONB — nothing is written to the pantry yet) → Submit opens a summary screen showing all queued changes → Confirm calls `complete`, which atomically applies all pantry updates and returns which items are now low → a follow-up prompt lets the user choose which low items to add to the shopping list via the existing `POST /api/shopping-list/items` route.
-
-`pendingChanges` shape: `{ ticked: string[], pantryChanges: [{ batchId, newFillLevel }], extraChanges: [{ batchId, newFillLevel }] }`
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/cook-sessions` | Cook history for the current user (COMPLETED only, CANCELLED filtered out). Optional `?recipeId` filter. Used for "last cooked" on recipe cards and user profile history. |
-| GET | `/api/cook-sessions/active` | Get the current user's IN_PROGRESS session, if any. Optional `?recipeId` filter. Returns `null` if none. Used to show "Resume Cooking" instead of "Start Cooking". |
-| POST | `/api/cook-sessions` | Start or resume a cook session. Body: `{ recipeId }`. If an IN_PROGRESS session already exists for this user + recipe, returns it with `resumed: true`. Otherwise creates a new one. |
-| GET | `/api/cook-sessions/:id` | Get a specific session including its photos. |
-| PATCH | `/api/cook-sessions/:id/pending-changes` | Save the current ticked/pending state mid-cook. Body: `{ pendingChanges }`. Replaces the full JSONB. Validates fill levels (must be 0/25/50/75/100). |
-| POST | `/api/cook-sessions/:id/complete` | Confirm completion. Atomically applies all pantry batch updates from `pendingChanges` and marks the session COMPLETED. Returns `{ session, lowStockItems: [{ ingredientId, name, effectiveStock }] }` — the frontend uses `lowStockItems` to prompt the user to add low/empty items to the shopping list. |
-| POST | `/api/cook-sessions/:id/cancel` | Cancel a session. Sets status to CANCELLED, clears `pendingChanges`. Record is kept for history but never shown in cook history lists. |
-| PATCH | `/api/cook-sessions/:id/note` | Add or update a note on a COMPLETED session. Body: `{ note }` (nullable). |
-| POST | `/api/cook-sessions/:id/images` | Upload a photo of the cook attempt. `multipart/form-data`, field `image`. Stored in Cloudinary under `cook-images/{userId}`. Only allowed on COMPLETED sessions. |
-| DELETE | `/api/cook-sessions/:id/images/:imageId` | Delete a cook session photo. |
-
-### Notifications
-
-In-app inbox. Polled periodically — no real-time push (push notifications are a separate `push_timer` feature, not used for inbox).
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/notifications` | List all notifications for the current user, newest first. Optional `?unread=true` to filter to unread only. |
-| GET | `/api/notifications/unread-count` | Returns `{ count: number }` for the inbox badge. |
-| PATCH | `/api/notifications/read-all` | Mark all notifications as read. |
-| PATCH | `/api/notifications/:id/read` | Mark a single notification as read. |
-
-### Shares & Reviews
-
-Sharing is copy-on-accept. A share record is permanent — history outlives both the original recipe and the copied recipe. Reviews are anchored to the share, not the recipe directly.
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/shares/received` | Shares sent to the current user, newest first. Includes sender info, recipe title (null if original deleted), status, and copiedRecipeId. |
-| GET | `/api/shares/sent` | Shares sent by the current user. |
-| POST | `/api/shares` | Share a recipe. Body: `{ recipeId, toUserId }`. Recipe must be in your household's book. 409 if a pending share already exists for this recipe+recipient. Creates a `RECIPE_SHARED` notification for the recipient. |
-| POST | `/api/shares/:id/accept` | Accept a share. Copies the original recipe into the recipient's household book (title, description, baseServings, steps, ingredients — not images) with `sharedByUserId` and `originalRecipeId` set. 410 if the original was deleted. |
-| POST | `/api/shares/:id/reject` | Reject a pending share. |
-| POST | `/api/shares/:id/recopy` | Re-copy from the original after the recipient deleted their copy. Only when `copiedRecipeId` is null (copy deleted) and `recipeId` is not null (original still exists). |
-| GET | `/api/shares/:shareId/review` | Get the review for a share (one per share). 404 if no review yet. |
-| POST | `/api/shares/:shareId/review` | Create a review. Body: `{ rating: 1–5, comment? }`. 409 if a review already exists — use PATCH to update. |
-| PATCH | `/api/shares/:shareId/review` | Update an existing review. Body: `{ rating?, comment? }`. Can update stars and/or comment at any time. |
-
-### Follows
-
-Contact list for the share dialog — no feed or timeline mechanics.
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/follows/following` | Users the current user follows, ordered by name. |
-| GET | `/api/follows/followers` | Users who follow the current user, ordered by name. |
-| POST | `/api/follows` | Follow a user. Body: `{ followingId }`. 400 if self-follow, 409 if already following. |
-| DELETE | `/api/follows/:userId` | Unfollow a user. |
-
-### Push Notifications (cooking timers)
-
-Background push notifications for cooking timers. The timer fires even when the phone is locked. Built on the Web Push API with VAPID keys.
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/push/vapid-public-key` | Get the server's VAPID public key — required by the browser's `pushManager.subscribe()` call. |
-| POST | `/api/push/subscribe` | Register a push subscription for the current device/browser. Body: the `PushSubscription` object from `pushManager.subscribe()`. |
-| DELETE | `/api/push/subscribe` | Remove the current device's push subscription. Body: `{ endpoint }`. |
-| GET | `/api/push/timers` | List the current user's timers (`PENDING` and `FIRED`). |
-| POST | `/api/push/timers` | Create a cooking timer. Body: `{ label: string, duration: number }` (duration in seconds, max 86400 = 24h). Fires a push notification when it expires, even if the phone is locked. Timer is persisted and recovered on server restart. |
-| DELETE | `/api/push/timers/:id` | Cancel and delete a timer. |

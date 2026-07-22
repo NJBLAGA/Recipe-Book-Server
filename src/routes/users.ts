@@ -191,6 +191,7 @@ router.get('/:handle', async (req, res) => {
       recipeId: userPinnedRecipe.recipeId,
       recipeTitle: recipe.title,
       recipeDescription: recipe.description,
+      recipeSource: recipe.source,
     })
     .from(userPinnedRecipe)
     .leftJoin(recipe, eq(userPinnedRecipe.recipeId, recipe.id))
@@ -260,6 +261,7 @@ router.get('/:handle/recipes/:recipeId', async (req, res) => {
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
+      source: recipe.source,
       baseServings: recipe.baseServings,
       steps: recipe.steps,
       categoryName: recipeCategory.name,

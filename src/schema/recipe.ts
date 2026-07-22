@@ -26,6 +26,7 @@ export const recipe = pgTable('recipe', {
   categoryId: uuid('category_id').references(() => recipeCategory.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
+  source: text('source'),
   baseServings: integer('base_servings').notNull(),
   steps: jsonb('steps').$type<{ text: string; subSteps: string[] }[]>().notNull().default([]),
   sharedByUserId: text('shared_by_user_id').references(() => user.id, { onDelete: 'set null' }),
