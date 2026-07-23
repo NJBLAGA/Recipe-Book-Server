@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const EXTRACTION_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5-20251001';
+const EXTRACTION_MODEL = process.env.ANTHROPIC_MODEL!;
 
 const extractedIngredientSchema = z.object({
   name: z.string(),
