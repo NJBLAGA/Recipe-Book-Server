@@ -279,13 +279,3 @@ erDiagram
 
 **Middleware order** — `helmet → cors → rate limit → better-auth handler → express.json() → routes`. CORS must precede the auth handler so browser preflight requests resolve before any credentialed request. The auth handler must precede `express.json()` — a documented requirement of better-auth.
 
----
-
-## Setup
-
-```bash
-npm install
-cp .env.example .env   # fill in all required values
-npm run db:migrate
-npm run dev
-```
