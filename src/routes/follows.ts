@@ -64,7 +64,7 @@ router.get('/followers', async (req, res) => {
 
 // POST /api/follows — follow a user
 router.post('/', followLimiter, async (req, res) => {
-  const parsed = z.object({ followingId: z.string().uuid() }).safeParse(req.body);
+  const parsed = z.object({ followingId: z.string().min(1) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
   if (parsed.data.followingId === req.user.id) {

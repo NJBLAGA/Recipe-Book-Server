@@ -7,6 +7,7 @@ const EMAIL = 'recipebook@test.com';
 let cookie: string;
 let categoryId: string;
 let recipeId: string;
+let recipe2Id: string;
 
 beforeAll(async () => {
   cookie = await signIn(EMAIL, 'Recipe User');
@@ -56,6 +57,15 @@ describe('Recipe Book — Categories', () => {
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('Sweets');
   });
+
+  it('returns 404 when renaming a non-existent category', async () => {
+    const res = await request(app)
+      .patch('/api/recipe-book/categories/00000000-0000-0000-0000-000000000000')
+      .set('Cookie', cookie)
+      .send({ name: 'Ghost' });
+
+    expect(res.status).toBe(404);
+  });
 });
 
 describe('Recipe Book — Recipes', () => {
@@ -65,6 +75,7 @@ describe('Recipe Book — Recipes', () => {
       .set('Cookie', cookie)
       .send({
         title: 'Chocolate Cake',
+        source: 'Grandma\'s cookbook',
         baseServings: 8,
         steps: ['Mix ingredients', 'Bake at 180°C for 30 min'],
         ingredients: [
@@ -77,14 +88,54 @@ describe('Recipe Book — Recipes', () => {
 
     expect(res.status).toBe(201);
     expect(res.body.title).toBe('Chocolate Cake');
+    expect(res.body.source).toBe('Grandma\'s cookbook');
     recipeId = res.body.id;
   });
 
-  it('validates required fields', async () => {
+  it('creates a recipe in a category', async () => {
     const res = await request(app)
       .post('/api/recipe-book/recipes')
       .set('Cookie', cookie)
-      .send({ title: 'No Steps', baseServings: 2, ingredients: [] });
+      .send({
+        title: 'Vanilla Sponge',
+        source: 'Family recipe book',
+        baseServings: 6,
+        categoryId,
+        steps: ['Whisk eggs and sugar', 'Fold in flour', 'Bake 25 min'],
+        ingredients: [
+          { name: 'eggs', quantity: 4, unit: null, note: null, sortOrder: 0 },
+          { name: 'sugar', quantity: 200, unit: 'g', note: null, sortOrder: 1 },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.categoryId).toBe(categoryId);
+    recipe2Id = res.body.id;
+  });
+
+  it('validates missing source field', async () => {
+    const res = await request(app)
+      .post('/api/recipe-book/recipes')
+      .set('Cookie', cookie)
+      .send({ title: 'No Source', baseServings: 2, steps: ['Do something'], ingredients: [{ name: 'flour', quantity: 100, unit: 'g', note: null, sortOrder: 0 }] });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('validates at least one step required', async () => {
+    const res = await request(app)
+      .post('/api/recipe-book/recipes')
+      .set('Cookie', cookie)
+      .send({ title: 'No Steps', source: 'Test', baseServings: 2, steps: [], ingredients: [{ name: 'flour', quantity: 100, unit: 'g', note: null, sortOrder: 0 }] });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('validates at least one ingredient required', async () => {
+    const res = await request(app)
+      .post('/api/recipe-book/recipes')
+      .set('Cookie', cookie)
+      .send({ title: 'No Ingredients', source: 'Test', baseServings: 2, steps: ['Step 1'], ingredients: [] });
 
     expect(res.status).toBe(400);
   });
@@ -95,7 +146,17 @@ describe('Recipe Book — Recipes', () => {
       .set('Cookie', cookie);
 
     expect(res.status).toBe(200);
+    expect(res.body.length).toBe(2);
+  });
+
+  it('filters recipes by categoryId', async () => {
+    const res = await request(app)
+      .get(`/api/recipe-book/recipes?categoryId=${categoryId}`)
+      .set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
     expect(res.body.length).toBe(1);
+    expect(res.body[0].id).toBe(recipe2Id);
   });
 
   it('searches recipes by title', async () => {
@@ -120,13 +181,21 @@ describe('Recipe Book — Recipes', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.ingredients.length).toBe(4);
-    // no-quantity ingredient has null quantity
+    // no-quantity ingredient has null quantity and a descriptive note
     const salt = res.body.ingredients.find((i: any) => i.name === 'salt');
     expect(salt.quantity).toBeNull();
     expect(salt.note).toBe('a pinch');
   });
 
-  it('updates a recipe', async () => {
+  it('returns 404 for a non-existent recipe', async () => {
+    const res = await request(app)
+      .get('/api/recipe-book/recipes/00000000-0000-0000-0000-000000000000')
+      .set('Cookie', cookie);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('updates a recipe title', async () => {
     const res = await request(app)
       .patch(`/api/recipe-book/recipes/${recipeId}`)
       .set('Cookie', cookie)
@@ -134,6 +203,17 @@ describe('Recipe Book — Recipes', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.title).toBe('Dark Chocolate Cake');
+  });
+
+  it('updates recipe steps with new object format', async () => {
+    const res = await request(app)
+      .patch(`/api/recipe-book/recipes/${recipeId}`)
+      .set('Cookie', cookie)
+      .send({ steps: [{ text: 'Melt chocolate', subSteps: ['Use low heat', 'Stir constantly'] }, 'Bake at 180°C for 30 min'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.steps[0].text).toBe('Melt chocolate');
+    expect(res.body.steps[0].subSteps).toEqual(['Use low heat', 'Stir constantly']);
   });
 });
 
@@ -170,9 +250,21 @@ describe('Recipe Book — Pins', () => {
     const res = await request(app)
       .put('/api/recipe-book/pins')
       .set('Cookie', cookie)
-      .send([{ position: 1, recipeId }, { position: 1, recipeId }]);
+      .send([{ position: 1, recipeId }, { position: 1, recipeId: recipe2Id }]);
 
     expect(res.status).toBe(400);
+  });
+
+  it('supports up to 5 pins', async () => {
+    const res = await request(app)
+      .put('/api/recipe-book/pins')
+      .set('Cookie', cookie)
+      .send([
+        { position: 1, recipeId },
+        { position: 2, recipeId: recipe2Id },
+      ]);
+
+    expect(res.status).toBe(200);
   });
 
   it('clears pins', async () => {
@@ -219,10 +311,21 @@ describe('Recipe Book — Delete', () => {
   });
 
   it('deletes a category', async () => {
+    // delete recipe2 first since category deletion shouldn't cascade
+    await request(app).delete(`/api/recipe-book/recipes/${recipe2Id}`).set('Cookie', cookie);
+
     const res = await request(app)
       .delete(`/api/recipe-book/categories/${categoryId}`)
       .set('Cookie', cookie);
 
     expect(res.status).toBe(200);
+  });
+
+  it('returns 404 when deleting a non-existent recipe', async () => {
+    const res = await request(app)
+      .delete('/api/recipe-book/recipes/00000000-0000-0000-0000-000000000000')
+      .set('Cookie', cookie);
+
+    expect(res.status).toBe(404);
   });
 });

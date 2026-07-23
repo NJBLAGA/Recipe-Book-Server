@@ -50,6 +50,7 @@ beforeAll(async () => {
     .set('Cookie', cookieA)
     .send({
       title: "A's Private Recipe",
+      source: 'Security test',
       baseServings: 2,
       steps: ['Step 1'],
       ingredients: [{ name: 'flour', quantity: 100, unit: 'g', note: null, sortOrder: 0 }],
@@ -72,6 +73,7 @@ beforeAll(async () => {
     .set('Cookie', cookieC)
     .send({
       title: 'Clean Recipe',
+      source: 'Security test',
       baseServings: 2,
       steps: ['Mix well'],
       ingredients: [{ name: 'butter', quantity: 50, unit: 'g', note: null, sortOrder: 0 }],
@@ -157,6 +159,7 @@ describe('Cross-household isolation', () => {
       .set('Cookie', cookieA)
       .send({
         title: 'Cross Cat Recipe',
+        source: 'Security test',
         baseServings: 2,
         steps: ['Step 1'],
         categoryId: categoryIdB,
@@ -186,6 +189,7 @@ describe('Cross-household isolation', () => {
 
 describe('Content moderation — recipe POST', () => {
   const validBase = {
+    source: 'Moderation test',
     baseServings: 2,
     steps: ['Mix well'],
     ingredients: [{ name: 'flour', quantity: 100, unit: 'g', note: null, sortOrder: 0 }],
@@ -242,7 +246,7 @@ describe('Content moderation — recipe POST', () => {
         ingredients: [{ name: 'shiitake mushrooms', quantity: 100, unit: 'g', note: 'stems removed', sortOrder: 0 }],
       });
     expect(res.status).toBe(201);
-    await request(app).delete(`/api/recipe-book/recipes/${res.body.id}`).set('Cookie', cookieC);
+    if (res.body.id) await request(app).delete(`/api/recipe-book/recipes/${res.body.id}`).set('Cookie', cookieC);
   });
 });
 

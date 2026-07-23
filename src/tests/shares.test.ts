@@ -19,16 +19,15 @@ beforeAll(async () => {
   await createHousehold(cookieA, 'Shares Household A');
   await createHousehold(cookieB, 'Shares Household B');
 
-  // Get Bob's user id
   const session = await request(app).get('/api/auth/get-session').set('Cookie', cookieB);
   userBId = session.body.user.id;
 
-  // Alice creates a recipe to share
   const recipeRes = await request(app)
     .post('/api/recipe-book/recipes')
     .set('Cookie', cookieA)
     .send({
       title: 'Shareable Pasta',
+      source: 'Alice\'s kitchen',
       baseServings: 4,
       steps: ['Boil pasta', 'Add sauce'],
       ingredients: [
@@ -106,7 +105,7 @@ describe('Shares', () => {
     copiedRecipeId = res.body.copiedRecipeId;
   });
 
-  it("Bob's recipe book now contains the copied recipe", async () => {
+  it("Bob's recipe book now contains the copied recipe with attribution", async () => {
     const res = await request(app)
       .get(`/api/recipe-book/recipes/${copiedRecipeId}`)
       .set('Cookie', cookieB);
@@ -115,6 +114,14 @@ describe('Shares', () => {
     expect(res.body.title).toBe('Shareable Pasta');
     expect(res.body.sharedByUserId).toBeTruthy();
     expect(res.body.originalRecipeId).toBe(recipeId);
+  });
+
+  it('cannot accept the same share again (already accepted)', async () => {
+    const res = await request(app)
+      .post(`/api/shares/${shareId}/accept`)
+      .set('Cookie', cookieB);
+
+    expect(res.status).toBe(400);
   });
 });
 
@@ -138,7 +145,7 @@ describe('Reviews', () => {
     expect(res.status).toBe(409);
   });
 
-  it('can update the review', async () => {
+  it('can update the review rating and comment', async () => {
     const res = await request(app)
       .patch(`/api/shares/${shareId}/review`)
       .set('Cookie', cookieB)
@@ -146,6 +153,7 @@ describe('Reviews', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.rating).toBe(4);
+    expect(res.body.comment).toBe('Updated — still a solid recipe');
   });
 
   it('fetches the review', async () => {
@@ -155,6 +163,16 @@ describe('Reviews', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.comment).toBe('Updated — still a solid recipe');
+    expect(res.body.rating).toBe(4);
+  });
+
+  it('review is not accessible by the share sender', async () => {
+    const res = await request(app)
+      .get(`/api/shares/${shareId}/review`)
+      .set('Cookie', cookieA);
+
+    // Alice is the sender, not the recipient — should be 403 or 404
+    expect([403, 404]).toContain(res.status);
   });
 });
 
@@ -220,5 +238,14 @@ describe('Follows', () => {
       .set('Cookie', cookieA);
 
     expect(res.status).toBe(200);
+  });
+
+  it("Bob no longer appears in Alice's following list after unfollow", async () => {
+    const res = await request(app)
+      .get('/api/follows/following')
+      .set('Cookie', cookieA);
+
+    expect(res.status).toBe(200);
+    expect(res.body.every((u: any) => u.id !== userBId)).toBe(true);
   });
 });
