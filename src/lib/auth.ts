@@ -173,6 +173,8 @@ export const auth = betterAuth({
       lastName: { type: 'string', required: false, input: true },
       bio: { type: 'string', required: false, input: true },
       theme: { type: 'string', required: false, input: true },
+      onboardingComplete: { type: 'boolean', required: false, input: true },
+      isDemoUser: { type: 'boolean', required: false, input: false },
     },
   },
 

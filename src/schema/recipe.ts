@@ -29,6 +29,8 @@ export const recipe = pgTable('recipe', {
   source: text('source'),
   baseServings: integer('base_servings').notNull(),
   steps: jsonb('steps').$type<{ text: string; subSteps: string[] }[]>().notNull().default([]),
+  prepTime: integer('prep_time'),
+  cookTime: integer('cook_time'),
   sharedByUserId: text('shared_by_user_id').references(() => user.id, { onDelete: 'set null' }),
   originalRecipeId: uuid('original_recipe_id').references((): AnyPgColumn => recipe.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

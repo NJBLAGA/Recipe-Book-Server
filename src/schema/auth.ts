@@ -12,6 +12,8 @@ export const user = pgTable('user', {
   bio: text('bio'),
   theme: text('theme'),
   isPublic: boolean('is_public').notNull().default(true),
+  isDemoUser: boolean('is_demo_user').notNull().default(false),
+  onboardingComplete: boolean('onboarding_complete').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

@@ -53,6 +53,8 @@ async function copyRecipe(
       description: original.description,
       source: original.source,
       baseServings: original.baseServings,
+      prepTime: original.prepTime,
+      cookTime: original.cookTime,
       steps: original.steps,
       sharedByUserId,
       originalRecipeId: original.id,

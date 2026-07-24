@@ -31,6 +31,7 @@ router.get('/me', async (req, res) => {
       image: user.image,
       theme: user.theme,
       isPublic: user.isPublic,
+      onboardingComplete: user.onboardingComplete,
       createdAt: user.createdAt,
     })
     .from(user)
@@ -50,10 +51,11 @@ router.patch('/me', async (req, res) => {
     bio: z.string().trim().max(500).nullable().optional(),
     theme: z.enum(['light', 'dark']).nullable().optional(),
     isPublic: z.boolean().optional(),
+    onboardingComplete: z.boolean().optional(),
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0].message }); return; }
 
-  const { handle, firstName, lastName, bio, theme, isPublic } = parsed.data;
+  const { handle, firstName, lastName, bio, theme, isPublic, onboardingComplete } = parsed.data;
 
   if (handle !== undefined) {
     const [taken] = await db
@@ -92,6 +94,7 @@ router.patch('/me', async (req, res) => {
       ...(bio !== undefined && { bio }),
       ...(theme !== undefined && { theme }),
       ...(isPublic !== undefined && { isPublic }),
+      ...(onboardingComplete !== undefined && { onboardingComplete }),
       ...(derivedName !== undefined && { name: derivedName }),
       updatedAt: new Date(),
     })
@@ -106,6 +109,7 @@ router.patch('/me', async (req, res) => {
       image: user.image,
       theme: user.theme,
       isPublic: user.isPublic,
+      onboardingComplete: user.onboardingComplete,
     });
 
   res.json(updated);
@@ -140,7 +144,7 @@ router.post('/me/picture', upload.single('image'), async (req, res) => {
 router.get('/community', async (req, res) => {
   const search = (typeof req.query.search === 'string' ? req.query.search.trim() : '').slice(0, 100);
 
-  const conditions = [isNotNull(user.handle), eq(user.isPublic, true)];
+  const conditions = [isNotNull(user.handle), eq(user.isPublic, true), eq(user.isDemoUser, false)];
   if (search.length >= 2) conditions.push(ilike(user.handle, `%${search}%`));
 
   const results = await db
@@ -180,7 +184,7 @@ router.get('/search', async (req, res) => {
     .from(user)
     .leftJoin(householdUser, eq(user.id, householdUser.userId))
     .leftJoin(household, eq(householdUser.householdId, household.id))
-    .where(and(isNotNull(user.handle), eq(user.isPublic, true), ilike(user.handle, `%${handle}%`)))
+    .where(and(isNotNull(user.handle), eq(user.isPublic, true), eq(user.isDemoUser, false), ilike(user.handle, `%${handle}%`)))
     .limit(20);
 
   res.json(results);
@@ -288,6 +292,8 @@ router.get('/:handle/recipes/:recipeId', async (req, res) => {
       description: recipe.description,
       source: recipe.source,
       baseServings: recipe.baseServings,
+      prepTime: recipe.prepTime,
+      cookTime: recipe.cookTime,
       steps: recipe.steps,
       categoryName: recipeCategory.name,
     })

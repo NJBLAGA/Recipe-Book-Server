@@ -172,6 +172,8 @@ const createRecipeSchema = z.object({
   description: z.string().trim().max(2000).optional(),
   source: z.string().trim().min(1, 'Source is required').max(500),
   baseServings: z.number().int().positive('Base servings must be a positive number'),
+  prepTime: z.number().int().min(0).max(1440).nullable().optional(),
+  cookTime: z.number().int().min(0).max(1440).nullable().optional(),
   categoryId: z.string().uuid().nullable().optional(),
   steps: z.array(stepInput).min(1, 'At least one step is required').max(200),
   ingredients: z.array(ingredientInputSchema).min(1, 'At least one ingredient is required').max(200),
@@ -703,6 +705,8 @@ router.get('/recipes', async (req, res) => {
       description: recipe.description,
       source: recipe.source,
       baseServings: recipe.baseServings,
+      prepTime: recipe.prepTime,
+      cookTime: recipe.cookTime,
       categoryId: recipe.categoryId,
       categoryName: recipeCategory.name,
       createdAt: recipe.createdAt,
@@ -738,7 +742,7 @@ router.post('/recipes', async (req, res) => {
     return;
   }
 
-  const { title, description, source, baseServings, categoryId, steps, ingredients } = parsed.data;
+  const { title, description, source, baseServings, prepTime, cookTime, categoryId, steps, ingredients } = parsed.data;
 
   if (!textIsClean(title)) {
     res.status(400).json({ error: 'Recipe contains inappropriate content' });
@@ -773,6 +777,8 @@ router.post('/recipes', async (req, res) => {
         description,
         source,
         baseServings,
+        prepTime: prepTime ?? null,
+        cookTime: cookTime ?? null,
         categoryId: categoryId ?? null,
         steps,
       })
@@ -809,6 +815,8 @@ router.get('/recipes/:id', async (req, res) => {
       description: recipe.description,
       source: recipe.source,
       baseServings: recipe.baseServings,
+      prepTime: recipe.prepTime,
+      cookTime: recipe.cookTime,
       categoryId: recipe.categoryId,
       categoryName: recipeCategory.name,
       steps: recipe.steps,
@@ -882,7 +890,7 @@ router.patch('/recipes/:id', async (req, res) => {
     return;
   }
 
-  const { title, description, source, baseServings, categoryId, steps, ingredients } = parsed.data;
+  const { title, description, source, baseServings, prepTime, cookTime, categoryId, steps, ingredients } = parsed.data;
 
   if (title !== undefined && !textIsClean(title)) {
     res.status(400).json({ error: 'Recipe contains inappropriate content' });
@@ -916,6 +924,8 @@ router.patch('/recipes/:id', async (req, res) => {
         ...(description !== undefined && { description }),
         ...(source !== undefined && { source }),
         ...(baseServings !== undefined && { baseServings }),
+        ...(prepTime !== undefined && { prepTime: prepTime ?? null }),
+        ...(cookTime !== undefined && { cookTime: cookTime ?? null }),
         ...(categoryId !== undefined && { categoryId: categoryId ?? null }),
         ...(steps !== undefined && { steps }),
         updatedAt: new Date(),

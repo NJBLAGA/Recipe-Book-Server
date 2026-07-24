@@ -51,6 +51,16 @@ async function main() {
   `);
   console.log('✓ shopping_list_item_image table');
 
+  // user: add is_demo_user and onboarding_complete
+  await db.execute(sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_demo_user boolean NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS onboarding_complete boolean NOT NULL DEFAULT false`);
+  console.log('✓ user.is_demo_user + user.onboarding_complete');
+
+  // recipe: add prep_time and cook_time (stored in minutes)
+  await db.execute(sql`ALTER TABLE recipe ADD COLUMN IF NOT EXISTS prep_time integer`);
+  await db.execute(sql`ALTER TABLE recipe ADD COLUMN IF NOT EXISTS cook_time integer`);
+  console.log('✓ recipe.prep_time + cook_time');
+
   console.log('\nAll migrations complete.');
   process.exit(0);
 }
