@@ -60,12 +60,13 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: true,
-    sendResetPassword: async ({ user, url }: { user: { email: string }; url: string; token: string }) => {
+    sendResetPassword: async ({ user, token }: { user: { email: string }; url: string; token: string }) => {
       try {
+        const resetUrl = `${process.env.CLIENT_URL ?? 'http://localhost:5173'}/reset-password?token=${token}`;
         await sendEmail({
           to: user.email,
           subject: 'Reset your password — The Shared Pantry Experience',
-          html: resetPasswordHtml(url),
+          html: resetPasswordHtml(resetUrl),
         });
       } catch { /* email delivery failure — non-blocking */ }
     },
@@ -107,10 +108,8 @@ export const auth = betterAuth({
   user: {
     changeEmail: {
       enabled: true,
-      // Sends a confirmation link to the current (old) email address. The user
-      // must click it before the email is actually switched. Errors from email
-      // delivery are caught by better-auth's runInBackgroundOrAwait and do not
-      // fail the request.
+      // Sends a confirmation link to the current (old) email. The user must
+      // click it to approve the switch — protects against unauthorised changes.
       sendChangeEmailConfirmation: async ({ user: u, newEmail, url }) => {
         const confirmUrl = new URL(url);
         confirmUrl.searchParams.set(

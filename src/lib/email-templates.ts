@@ -119,11 +119,12 @@ export function passwordChangedHtml(): string {
 export function confirmEmailChangeHtml(newEmail: string, url: string): string {
   return wrap(`
     <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#1c1917;letter-spacing:-0.4px;">
-      Confirm your email change
+      Did you request this change?
     </h1>
     <p style="margin:0 0 28px;font-size:15px;color:#57534e;line-height:1.65;">
-      You requested to change your email address to <strong>${newEmail}</strong>.
-      Click the button below to confirm. If you didn't request this, ignore this email — your address won't change.
+      A request was made to change your email address to <strong>${newEmail}</strong>.
+      If this was you, click the button below to confirm — your email will switch straight away.
+      If you didn't request this, ignore this email and your address will stay the same.
     </p>
-    ${button(url, 'Confirm Email Change')}`);
+    ${button(url, 'Yes, confirm the change')}`);
 }
