@@ -14,9 +14,22 @@ app.set('trust proxy', 1);
 
 app.use(helmet());
 
+const ALLOWED_ORIGINS = [
+  'https://thesharedpantryexperience.com',
+  'https://www.thesharedpantryexperience.com',
+  process.env.CLIENT_URL,
+  'http://localhost:5173',
+].filter(Boolean) as string[];
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL ?? 'http://localhost:5173',
+    origin: (origin, callback) => {
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
   })
 );

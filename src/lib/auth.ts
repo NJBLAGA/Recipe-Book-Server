@@ -6,6 +6,7 @@ import { db } from '../db';
 import { user, session, account, verification } from '../schema/auth';
 import { household, householdUser } from '../schema/household';
 import { sendEmail } from './email';
+import { verifyEmailHtml, resetPasswordHtml, passwordChangedHtml, confirmEmailChangeHtml } from './email-templates';
 
 // Domains where +tag addressing is supported (strips the tag before uniqueness check)
 const PLUS_TAG_DOMAINS = new Set([
@@ -63,9 +64,8 @@ export const auth = betterAuth({
       try {
         await sendEmail({
           to: user.email,
-          subject: 'Reset your password',
-          html: `<p>Click the link below to reset your password. This link expires in 1 hour.</p>
-                 <a href="${url}">Reset password</a>`,
+          subject: 'Reset your password — The Shared Pantry Experience',
+          html: resetPasswordHtml(url),
         });
       } catch { /* email delivery failure — non-blocking */ }
     },
@@ -73,8 +73,8 @@ export const auth = betterAuth({
       try {
         await sendEmail({
           to: user.email,
-          subject: 'Your password has been changed',
-          html: `<p>Your password was successfully reset. If you did not make this change, contact support immediately.</p>`,
+          subject: 'Your password has been changed — The Shared Pantry Experience',
+          html: passwordChangedHtml(),
         });
       } catch { /* email delivery failure — non-blocking */ }
     },
@@ -90,9 +90,8 @@ export const auth = betterAuth({
         );
         await sendEmail({
           to: opts.user.email,
-          subject: 'Verify your email address',
-          html: `<p>Welcome! Click the link below to verify your email address.</p>
-                 <a href="${verificationUrl.toString()}">Verify email</a>`,
+          subject: 'Verify your email address — The Shared Pantry Experience',
+          html: verifyEmailHtml(verificationUrl.toString()),
         });
       } catch { /* email delivery failure — non-blocking */ }
     },
@@ -120,10 +119,8 @@ export const auth = betterAuth({
         );
         await sendEmail({
           to: u.email,
-          subject: 'Confirm your email change',
-          html: `<p>You requested to change your email to <strong>${newEmail}</strong>.</p>
-                 <p>Click the link below to confirm. If you did not request this, ignore this email.</p>
-                 <a href="${confirmUrl.toString()}">Confirm email change</a>`,
+          subject: 'Confirm your email change — The Shared Pantry Experience',
+          html: confirmEmailChangeHtml(newEmail, confirmUrl.toString()),
         });
       },
     },
