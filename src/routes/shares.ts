@@ -609,4 +609,21 @@ router.patch('/:shareId/review', async (req, res) => {
   res.json(updated);
 });
 
+// DELETE /api/shares/:id — permanently remove a share from the caller's history
+router.delete('/:id', async (req, res) => {
+  const [share] = await db
+    .select({ id: recipeShare.id, fromUserId: recipeShare.fromUserId, toUserId: recipeShare.toUserId })
+    .from(recipeShare)
+    .where(eq(recipeShare.id, req.params.id))
+    .limit(1);
+
+  if (!share) { res.status(404).json({ error: 'Share not found' }); return; }
+  if (share.fromUserId !== req.user.id && share.toUserId !== req.user.id) {
+    res.status(403).json({ error: 'Not authorised' }); return;
+  }
+
+  await db.delete(recipeShare).where(eq(recipeShare.id, share.id));
+  res.json({ message: 'Deleted' });
+});
+
 export default router;

@@ -858,4 +858,21 @@ router.post('/:id/leave', async (req, res) => {
   res.json({ message: 'You have left the household' });
 });
 
+// DELETE /api/households/join-requests/:id — permanently dismiss a join request or invite
+router.delete('/join-requests/:id', async (req, res) => {
+  const [joinRequest] = await db
+    .select()
+    .from(householdJoinRequest)
+    .where(eq(householdJoinRequest.id, req.params.id))
+    .limit(1);
+
+  if (!joinRequest) { res.status(404).json({ error: 'Not found' }); return; }
+
+  const isParty = joinRequest.userId === req.user.id || joinRequest.initiatedByUserId === req.user.id;
+  if (!isParty) { res.status(403).json({ error: 'Not authorised' }); return; }
+
+  await db.delete(householdJoinRequest).where(eq(householdJoinRequest.id, joinRequest.id));
+  res.json({ message: 'Dismissed' });
+});
+
 export default router;
