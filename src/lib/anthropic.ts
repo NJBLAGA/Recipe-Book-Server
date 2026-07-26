@@ -302,3 +302,31 @@ function parseModelResponse(message: Anthropic.Message): ExtractedRecipe {
 
   return validation.data as ExtractedRecipe;
 }
+
+export async function suggestCategory(
+  name: string,
+  type: 'recipe' | 'pantry' | 'shopping-list',
+  existingCategories: string[],
+): Promise<string> {
+  const typeLabel = type === 'recipe' ? 'recipe'
+    : type === 'pantry' ? 'pantry item'
+    : 'shopping list item';
+  const catList = existingCategories.length
+    ? `Existing categories: ${existingCategories.join(', ')}.`
+    : 'There are no existing categories yet.';
+
+  const msg = await client.messages.create({
+    model: EXTRACTION_MODEL,
+    max_tokens: 50,
+    messages: [{
+      role: 'user',
+      content: `You are a home cooking assistant helping organise a ${typeLabel} called "${name}". ${catList} Suggest the single best category for this item. If an existing category fits well, return its exact name. Otherwise suggest a concise new category name (2–3 words maximum). Reply with the category name only — nothing else.`,
+    }],
+  });
+
+  return msg.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+}
