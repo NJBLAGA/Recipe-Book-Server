@@ -79,15 +79,15 @@ describe('Pantry — Categories', () => {
 });
 
 describe('Pantry — Items', () => {
-  it('adds an ingredient to the pantry as in-stock', async () => {
+  it('adds an ingredient to the pantry as in_stock', async () => {
     const res = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookie)
-      .send({ name: 'milk', categoryId, inStock: true });
+      .send({ name: 'milk', categoryId, stockStatus: 'in_stock' });
 
     expect(res.status).toBe(201);
     expect(res.body.id).toBeDefined();
-    expect(res.body.inStock).toBe(true);
+    expect(res.body.stockStatus).toBe('in_stock');
     itemId = res.body.id;
   });
 
@@ -104,7 +104,7 @@ describe('Pantry — Items', () => {
     const res = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookie)
-      .send({ name: 'chicken breast', categoryId, inStock: true, quantity: 2, unit: 'kg', notes: '500g packs' });
+      .send({ name: 'chicken breast', categoryId, stockStatus: 'in_stock', quantity: 2, unit: 'kg', notes: '500g packs' });
 
     expect(res.status).toBe(201);
     expect(res.body.notes).toBe('500g packs');
@@ -112,14 +112,24 @@ describe('Pantry — Items', () => {
     expect(res.body.unit).toBe('kg');
   });
 
-  it('lists items with inStock and images', async () => {
+  it('adds an item with low_stock status', async () => {
+    const res = await request(app)
+      .post('/api/pantry/items')
+      .set('Cookie', cookie)
+      .send({ name: 'butter', categoryId, stockStatus: 'low_stock' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.stockStatus).toBe('low_stock');
+  });
+
+  it('lists items with stockStatus and images', async () => {
     const res = await request(app)
       .get('/api/pantry/items')
       .set('Cookie', cookie);
 
     expect(res.status).toBe(200);
     expect(res.body.length).toBeGreaterThanOrEqual(2);
-    expect(typeof res.body[0].inStock).toBe('boolean');
+    expect(['in_stock', 'low_stock', 'out_of_stock']).toContain(res.body[0].stockStatus);
     expect(Array.isArray(res.body[0].images)).toBe(true);
   });
 
@@ -151,25 +161,35 @@ describe('Pantry — Items', () => {
     expect(res.status).toBe(404);
   });
 
-  it('marks an item out of stock', async () => {
+  it('marks an item out_of_stock', async () => {
     const res = await request(app)
       .patch(`/api/pantry/items/${itemId}`)
       .set('Cookie', cookie)
-      .send({ inStock: false });
+      .send({ stockStatus: 'out_of_stock' });
 
     expect(res.status).toBe(200);
-    expect(res.body.inStock).toBe(false);
+    expect(res.body.stockStatus).toBe('out_of_stock');
+  });
+
+  it('marks an item low_stock', async () => {
+    const res = await request(app)
+      .patch(`/api/pantry/items/${itemId}`)
+      .set('Cookie', cookie)
+      .send({ stockStatus: 'low_stock' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.stockStatus).toBe('low_stock');
   });
 
   it('updates notes and quantity on an item', async () => {
     const res = await request(app)
       .patch(`/api/pantry/items/${itemId}`)
       .set('Cookie', cookie)
-      .send({ notes: '2L carton', quantity: 1, unit: 'L', inStock: true });
+      .send({ notes: '2L carton', quantity: 1, unit: 'L', stockStatus: 'in_stock' });
 
     expect(res.status).toBe(200);
     expect(res.body.notes).toBe('2L carton');
-    expect(res.body.inStock).toBe(true);
+    expect(res.body.stockStatus).toBe('in_stock');
   });
 
   it('moves an item to a different category', async () => {

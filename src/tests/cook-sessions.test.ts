@@ -36,7 +36,7 @@ beforeAll(async () => {
   const pantryRes = await request(app)
     .post('/api/pantry/items')
     .set('Cookie', cookie)
-    .send({ name: 'water', categoryId: catId, inStock: true });
+    .send({ name: 'water', categoryId: catId, stockStatus: 'in_stock' });
   pantryItemId = pantryRes.body.id;
 });
 
@@ -91,7 +91,7 @@ describe('Cook Sessions', () => {
     const pendingChanges = {
       ticked: [],
       tickedSteps: [],
-      pantryChanges: [{ itemId: pantryItemId, inStock: false }],
+      pantryChanges: [{ itemId: pantryItemId, stockStatus: 'out_of_stock' }],
       extraChanges: [],
     };
 
@@ -111,12 +111,12 @@ describe('Cook Sessions', () => {
     const otherItemRes = await request(app)
       .post('/api/pantry/items')
       .set('Cookie', cookie)
-      .send({ name: 'salt', categoryId: pantryRes.body.id, inStock: true });
+      .send({ name: 'salt', categoryId: pantryRes.body.id, stockStatus: 'in_stock' });
 
     const pendingChanges = {
       ticked: [otherItemRes.body.ingredientId ?? otherItemRes.body.id],
       tickedSteps: [0, 1],
-      pantryChanges: [{ itemId: pantryItemId, inStock: false }],
+      pantryChanges: [{ itemId: pantryItemId, stockStatus: 'out_of_stock' }],
       extraChanges: [],
     };
 
@@ -137,7 +137,7 @@ describe('Cook Sessions', () => {
         pendingChanges: {
           ticked: [],
           tickedSteps: [],
-          pantryChanges: [{ itemId: 'not-a-uuid', inStock: 'maybe' }],
+          pantryChanges: [{ itemId: 'not-a-uuid', stockStatus: 'maybe' }],
           extraChanges: [],
         },
       });
