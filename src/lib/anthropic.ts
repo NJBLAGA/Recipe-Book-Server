@@ -48,6 +48,21 @@ export interface ExtractedRecipe {
   ingredients: ExtractedIngredient[];
 }
 
+// Normalises temperatures in step text — keeps Celsius, drops Fahrenheit.
+// "Preheat to 180C/350F" → "Preheat to 180°C"
+// "350F/180C" → "180°C"  (handles imperial-first ordering too)
+export function cleanStepText(s: string): string {
+  return s
+    // Celsius first: "180C / 350F" or "180°C/350°F"
+    .replace(/(\d+)\s*°?\s*C\s*[/\\]\s*\d+\s*°?\s*F\b/gi, '$1°C')
+    // Fahrenheit first: "350F / 180C"
+    .replace(/\d+\s*°?\s*F\s*[/\\]\s*(\d+)\s*°?\s*C\b/gi, '$1°C')
+    // Bare "180C" with no slash pair → add degree symbol
+    .replace(/(\d+)\s*°?\s*C\b(?!\s*\/)/gi, '$1°C')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 // Removes "page N" references from ingredient text.
 // Handles: "— page 57, or …" → "— …", "(page 57)" → "", "page 57" → "".
 function stripPageRefs(s: string): string {
@@ -186,11 +201,19 @@ DESCRIPTION RULES:
 
 GENERAL RULES:
 
-7. Extract only the most prominent recipe if multiple appear.
-8. Steps: plain text strings, no numbering or bullet prefixes.
-9. baseServings: integer from "Serves N", "Makes N", "Yield N". Default 4 if absent.
-10. If ingredients or steps cannot be found, return empty arrays [].
-11. Always return valid JSON matching the exact shape above — no explanation, no markdown.`;
+STEP RULES:
+
+7. Temperature: when a step lists both Celsius and Fahrenheit (e.g. "180C/350F" or "350°F / 180°C"), always use only the Celsius value. Remove the Fahrenheit entirely.
+   BAD:  "Preheat oven to 180C/350F."
+   GOOD: "Preheat oven to 180°C."
+
+GENERAL RULES:
+
+8. Extract only the most prominent recipe if multiple appear.
+9. Steps: plain text strings, no numbering or bullet prefixes.
+10. baseServings: integer from "Serves N", "Makes N", "Yield N". Default 4 if absent.
+11. If ingredients or steps cannot be found, return empty arrays [].
+12. Always return valid JSON matching the exact shape above — no explanation, no markdown.`;
 
 export async function extractRecipeFromImages(
   images: Array<{ buffer: Buffer; mimetype: string }>
@@ -221,6 +244,7 @@ export async function extractRecipeFromImages(
 
   const result = parseModelResponse(message);
   result.ingredients = result.ingredients.map(cleanIngredient);
+  result.steps = result.steps.map(cleanStepText);
   result.description = cleanDescription(result.description);
   return result;
 }
@@ -240,6 +264,7 @@ export async function extractRecipeFromText(text: string): Promise<ExtractedReci
 
   const result = parseModelResponse(message);
   result.ingredients = result.ingredients.map(cleanIngredient);
+  result.steps = result.steps.map(cleanStepText);
   result.description = cleanDescription(result.description);
   return result;
 }

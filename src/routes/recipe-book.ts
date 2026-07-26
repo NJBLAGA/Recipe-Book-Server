@@ -20,6 +20,7 @@ import {
   extractRecipeFromText,
   cleanIngredient,
   cleanDescription,
+  cleanStepText,
   ExtractedIngredient,
   ExtractedRecipe,
 } from '../lib/anthropic';
@@ -147,7 +148,7 @@ function mapJsonLdToRecipe(schema: Record<string, unknown>): ExtractedRecipe {
     .map(normaliseIngredientString)
     .map(parseIngredientString)
     .map(cleanIngredient);
-  const steps = flattenHowToSteps(schema.recipeInstructions);
+  const steps = flattenHowToSteps(schema.recipeInstructions).map(cleanStepText);
 
   const yieldRaw = schema.recipeYield;
   let baseServings = 4;
