@@ -621,11 +621,11 @@ router.get('/can-make', async (req, res) => {
   if (recipes.length === 0) { res.json({ ready: [], almost: [], rest: [] }); return; }
 
   const stockRows = await db
-    .select({ ingredientId: pantryItem.ingredientId, inStock: pantryItem.inStock })
+    .select({ ingredientId: pantryItem.ingredientId, stockStatus: pantryItem.stockStatus })
     .from(pantryItem)
     .where(eq(pantryItem.pantryId, p.id));
 
-  const stockMap = new Map(stockRows.map(r => [r.ingredientId, r.inStock]));
+  const stockMap = new Map(stockRows.map(r => [r.ingredientId, r.stockStatus]));
 
   const recipeIdList = recipes.map(r => r.id);
 
@@ -654,14 +654,22 @@ router.get('/can-make', async (req, res) => {
     const ings = byRecipe.get(r.id) ?? [];
     const measurable = ings.filter(i => i.quantity !== null);
 
-    const missing = measurable.filter(i => !stockMap.get(i.ingredientId));
+    const missing = measurable.filter(i => {
+      const s = stockMap.get(i.ingredientId);
+      return !s || s === 'out_of_stock';
+    });
 
     const matchPct = measurable.length > 0
       ? Math.round(((measurable.length - missing.length) / measurable.length) * 100)
       : 100;
 
     if (missing.length === 0) {
-      ready.push({ id: r.id, title: r.title, runningLowItems: [] });
+      const runningLow = measurable.filter(i => stockMap.get(i.ingredientId) === 'low_stock');
+      ready.push({
+        id: r.id,
+        title: r.title,
+        runningLowItems: runningLow.map(i => ({ ingredientId: i.ingredientId, name: i.name })),
+      });
     } else if (missing.length <= 2) {
       almost.push({
         id: r.id,

@@ -48,6 +48,17 @@ export interface ExtractedRecipe {
   ingredients: ExtractedIngredient[];
 }
 
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
 // Normalises temperatures in step text — keeps Celsius, drops Fahrenheit.
 // "Preheat to 180C/350F" → "Preheat to 180°C"
 // "350F/180C" → "180°C"  (handles imperial-first ordering too)
@@ -182,10 +193,13 @@ INGREDIENT RULES — follow every one exactly:
    "10 to 12 taco shells" → quantity: 10
    "8–10 leaves" → quantity: 8
 
-3. Metric only. When a source lists both metric and imperial, extract only the metric value. Discard the imperial.
+3. Weight units: when a source lists both metric and imperial for weight, extract only the metric value.
    "500 g / 1 lb beef" → quantity: 500, unit: "g"
-   "250 ml / 1 cup milk" → quantity: 250, unit: "ml"
    "2 kg / 4 lb chicken" → quantity: 2, unit: "kg"
+   Volume measures (cups, tsp, tbsp, ml, L) are NOT converted — extract exactly as written.
+   Cups, tsp, and tbsp are universal: if the recipe uses them, keep them.
+   "1 cup / 250 ml milk" → quantity: 1, unit: "cups"
+   "250 ml / 1 cup milk" → quantity: 250, unit: "ml"
 
 4. Note field: plain text only. No parentheses, no "Note N" markers, no references to videos or page sections.
    "500 g beef, ground / mince (Note 2)" → name: "beef", quantity: 500, unit: "g", note: "ground or mince"
@@ -243,6 +257,14 @@ export async function extractRecipeFromImages(
   });
 
   const result = parseModelResponse(message);
+  result.title = decodeHtmlEntities(result.title);
+  result.description = result.description ? decodeHtmlEntities(result.description) : null;
+  result.steps = result.steps.map(decodeHtmlEntities);
+  result.ingredients = result.ingredients.map((i) => ({
+    ...i,
+    name: decodeHtmlEntities(i.name),
+    note: i.note ? decodeHtmlEntities(i.note) : null,
+  }));
   result.ingredients = result.ingredients.map(cleanIngredient);
   result.steps = result.steps.map(cleanStepText);
   result.description = cleanDescription(result.description);
@@ -263,6 +285,14 @@ export async function extractRecipeFromText(text: string): Promise<ExtractedReci
   });
 
   const result = parseModelResponse(message);
+  result.title = decodeHtmlEntities(result.title);
+  result.description = result.description ? decodeHtmlEntities(result.description) : null;
+  result.steps = result.steps.map(decodeHtmlEntities);
+  result.ingredients = result.ingredients.map((i) => ({
+    ...i,
+    name: decodeHtmlEntities(i.name),
+    note: i.note ? decodeHtmlEntities(i.note) : null,
+  }));
   result.ingredients = result.ingredients.map(cleanIngredient);
   result.steps = result.steps.map(cleanStepText);
   result.description = cleanDescription(result.description);

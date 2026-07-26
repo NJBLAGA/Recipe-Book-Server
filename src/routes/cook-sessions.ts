@@ -29,16 +29,18 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
+const STOCK_STATUS = z.enum(['in_stock', 'low_stock', 'out_of_stock']);
+
 const pendingChangesSchema = z.object({
   ticked: z.array(z.string().uuid()).default([]),
   tickedSteps: z.array(z.number().int().min(0)).default([]),
   pantryChanges: z.array(z.object({
     itemId: z.string().uuid(),
-    inStock: z.boolean(),
+    stockStatus: STOCK_STATUS,
   })).default([]),
   extraChanges: z.array(z.object({
     itemId: z.string().uuid(),
-    inStock: z.boolean(),
+    stockStatus: STOCK_STATUS,
   })).default([]),
 });
 
@@ -282,7 +284,7 @@ router.post('/:id/complete', async (req, res) => {
   const parsedBody = z.object({
     pantryChanges: z.array(z.object({
       itemId: z.string().uuid(),
-      inStock: z.boolean(),
+      stockStatus: STOCK_STATUS,
       quantity: z.number().int().min(1).max(999).nullable().optional(),
       unit: z.string().trim().max(50).nullable().optional(),
       notes: z.string().trim().max(500).nullable().optional(),
@@ -300,7 +302,7 @@ router.post('/:id/complete', async (req, res) => {
     const outOfStockItemIds: string[] = [];
 
     for (const change of allItemChanges) {
-      const { itemId, inStock } = change;
+      const { itemId, stockStatus } = change;
       const [item] = await tx
         .select({ id: pantryItem.id })
         .from(pantryItem)
@@ -309,7 +311,7 @@ router.post('/:id/complete', async (req, res) => {
 
       if (!item) continue; // item deleted mid-session; skip silently
 
-      const updateFields: Record<string, unknown> = { inStock, updatedAt: new Date() };
+      const updateFields: Record<string, unknown> = { stockStatus, updatedAt: new Date() };
       if ('quantity' in change && change.quantity !== undefined) updateFields.quantity = change.quantity;
       if ('unit' in change && change.unit !== undefined) updateFields.unit = change.unit;
       if ('notes' in change && change.notes !== undefined) updateFields.notes = change.notes;
@@ -319,7 +321,7 @@ router.post('/:id/complete', async (req, res) => {
         .set(updateFields)
         .where(eq(pantryItem.id, item.id));
 
-      if (!inStock) outOfStockItemIds.push(item.id);
+      if (stockStatus === 'out_of_stock') outOfStockItemIds.push(item.id);
     }
 
     const [done] = await tx

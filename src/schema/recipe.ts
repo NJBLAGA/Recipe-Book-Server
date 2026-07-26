@@ -63,8 +63,8 @@ export const recipeCook = pgTable('recipe_cook', {
   pendingChanges: jsonb('pending_changes').$type<{
     ticked: string[];
     tickedSteps: number[];
-    pantryChanges: { itemId: string; inStock: boolean }[];
-    extraChanges: { itemId: string; inStock: boolean }[];
+    pantryChanges: { itemId: string; stockStatus: 'in_stock' | 'low_stock' | 'out_of_stock' }[];
+    extraChanges: { itemId: string; stockStatus: 'in_stock' | 'low_stock' | 'out_of_stock' }[];
   }>(),
   note: text('note'),
   servings: integer('servings'),

@@ -49,8 +49,9 @@ async function main() {
   const existingIds = new Set(existing.map((e) => e.ingredientId));
   console.log(`${existingIds.size} already in pantry`);
 
-  // Vary in-stock status to simulate realistic pantry
-  const stockPattern = [true, true, true, true, true, false, true, true, false, true];
+  const stockPattern: Array<'in_stock' | 'low_stock' | 'out_of_stock'> = [
+    'in_stock', 'in_stock', 'in_stock', 'in_stock', 'low_stock', 'in_stock', 'out_of_stock', 'in_stock', 'in_stock', 'low_stock',
+  ];
   let added = 0;
   let idx = 0;
 
@@ -60,12 +61,12 @@ async function main() {
       continue;
     }
 
-    const inStock = stockPattern[idx % stockPattern.length];
+    const stockStatus = stockPattern[idx % stockPattern.length];
     idx++;
 
-    await db.insert(pantryItem).values({ pantryId, ingredientId, inStock });
+    await db.insert(pantryItem).values({ pantryId, ingredientId, stockStatus });
 
-    console.log(`  Added: ${name} — ${inStock ? 'in stock' : 'out of stock'}`);
+    console.log(`  Added: ${name} — ${stockStatus}`);
     added++;
   }
 

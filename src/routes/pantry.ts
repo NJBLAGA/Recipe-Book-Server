@@ -31,10 +31,12 @@ const categorySchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(100),
 });
 
+const STOCK_STATUS = z.enum(['in_stock', 'low_stock', 'out_of_stock']);
+
 const createItemSchema = z.object({
   name: z.string().trim().min(1, 'Ingredient name is required').max(200),
   categoryId: z.string().uuid({ message: 'Category is required' }),
-  inStock: z.boolean().default(true),
+  stockStatus: STOCK_STATUS.default('in_stock'),
   quantity: z.number().int().min(1).max(999).nullable().optional(),
   unit: z.string().trim().max(50).nullable().optional(),
   notes: z.string().trim().max(500).nullable().optional(),
@@ -42,7 +44,7 @@ const createItemSchema = z.object({
 
 const updateItemSchema = z.object({
   categoryId: z.string().uuid().nullable().optional(),
-  inStock: z.boolean().optional(),
+  stockStatus: STOCK_STATUS.optional(),
   quantity: z.number().int().min(1).max(999).nullable().optional(),
   unit: z.string().trim().max(50).nullable().optional(),
   notes: z.string().trim().max(500).nullable().optional(),
@@ -139,7 +141,7 @@ router.get('/items', async (req, res) => {
       ingredientName: ingredient.name,
       categoryId: pantryItem.categoryId,
       categoryName: pantryCategory.name,
-      inStock: pantryItem.inStock,
+      stockStatus: pantryItem.stockStatus,
       quantity: pantryItem.quantity,
       unit: pantryItem.unit,
       notes: pantryItem.notes,
@@ -204,7 +206,7 @@ router.post('/items', async (req, res) => {
           pantryId: req.pantryId,
           ingredientId,
           categoryId: parsed.data.categoryId,
-          inStock: parsed.data.inStock,
+          stockStatus: parsed.data.stockStatus,
           quantity: parsed.data.quantity ?? null,
           unit: parsed.data.unit ?? null,
           notes: parsed.data.notes ?? null,
@@ -231,7 +233,7 @@ router.get('/items/:id', async (req, res) => {
       ingredientName: ingredient.name,
       categoryId: pantryItem.categoryId,
       categoryName: pantryCategory.name,
-      inStock: pantryItem.inStock,
+      stockStatus: pantryItem.stockStatus,
       quantity: pantryItem.quantity,
       unit: pantryItem.unit,
       notes: pantryItem.notes,
@@ -277,7 +279,7 @@ router.patch('/items/:id', async (req, res) => {
 
   const updateFields: Record<string, unknown> = { updatedAt: new Date() };
   if (parsed.data.categoryId !== undefined) updateFields.categoryId = parsed.data.categoryId;
-  if (parsed.data.inStock !== undefined) updateFields.inStock = parsed.data.inStock;
+  if (parsed.data.stockStatus !== undefined) updateFields.stockStatus = parsed.data.stockStatus;
   if (parsed.data.quantity !== undefined) updateFields.quantity = parsed.data.quantity;
   if (parsed.data.unit !== undefined) updateFields.unit = parsed.data.unit;
   if (parsed.data.notes !== undefined) updateFields.notes = parsed.data.notes;

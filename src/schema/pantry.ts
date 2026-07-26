@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, smallint, integer, boolean, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, smallint, integer, unique } from 'drizzle-orm/pg-core';
 import { household } from './household';
 import { ingredient } from './ingredient';
 
@@ -22,7 +22,7 @@ export const pantryItem = pgTable('pantry_item', {
   pantryId: uuid('pantry_id').notNull().references(() => pantry.id, { onDelete: 'cascade' }),
   ingredientId: uuid('ingredient_id').notNull().references(() => ingredient.id),
   categoryId: uuid('category_id').references(() => pantryCategory.id, { onDelete: 'set null' }),
-  inStock: boolean('in_stock').notNull().default(true),
+  stockStatus: text('stock_status').notNull().default('in_stock'),
   quantity: smallint('quantity'),
   unit: text('unit'),
   notes: text('notes'),
