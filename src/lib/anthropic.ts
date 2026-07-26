@@ -78,7 +78,7 @@ function stripNoteRefs(s: string): string {
 function cleanNote(s: string | null): string | null {
   if (!s) return null;
   const cleaned = stripNoteRefs(s)
-    .replace(/[()]/g, '')
+    .replace(/[()""'']/g, '')
     .replace(/^["'\s/,–—]+|["'\s/,–—]+$/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -86,8 +86,9 @@ function cleanNote(s: string | null): string | null {
 }
 
 // Strips opening media/cross-page reference sentences from a description.
+// Exported so the JSON-LD path in recipe-book.ts can use the same cleaner.
 // "Recipe video above. Beef tacos…" → "Beef tacos…"
-function cleanDescription(s: string | null): string | null {
+export function cleanDescription(s: string | null): string | null {
   if (!s) return null;
   let text = s.trim();
 

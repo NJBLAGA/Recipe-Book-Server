@@ -18,6 +18,8 @@ import { findOrCreateIngredient } from '../lib/ingredient';
 import {
   extractRecipeFromImages,
   extractRecipeFromText,
+  cleanIngredient,
+  cleanDescription,
   ExtractedIngredient,
   ExtractedRecipe,
 } from '../lib/anthropic';
@@ -61,6 +63,26 @@ const FRACTION_MAP: Record<string, number> = {
   '⅓': 0.3333, '⅔': 0.6667,
   '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875,
 };
+
+// Pre-processes a raw ingredient string from JSON-LD before parsing:
+//   "500 g / 1 lb beef"  → "500 g beef"   (metric only)
+//   "10 to 12 shells"    → "10 shells"     (lower of range)
+//   "8–10 leaves"        → "8 leaves"      (lower of range)
+function normaliseIngredientString(raw: string): string {
+  let s = raw;
+
+  // Metric / imperial dual notation — keep metric, drop imperial
+  s = s.replace(
+    /(\d+(?:[.,]\d+)?)\s*(g|kg|mg|ml|l|litres?|liters?)\s*\/\s*\d+(?:[.,]\d+)?\s*(?:oz\.?|lbs?\.?|pounds?|cups?|fl\.?\s*oz\.?|tbsps?\.?|tsps?\.?|pints?|quarts?|gallons?)(?=\s|,|$)/gi,
+    '$1 $2',
+  );
+
+  // Quantity ranges — use the lower number
+  s = s.replace(/\b(\d+(?:\.\d+)?)\s+to\s+\d+(?:\.\d+)?\b/gi, '$1');
+  s = s.replace(/\b(\d+(?:\.\d+)?)\s*[-–—]\s*\d+(?:\.\d+)?\b/g, '$1');
+
+  return s;
+}
 
 function parseQuantityStr(raw: string): number | null {
   let s = raw.trim();
@@ -121,7 +143,10 @@ function flattenHowToSteps(raw: unknown): string[] {
 }
 
 function mapJsonLdToRecipe(schema: Record<string, unknown>): ExtractedRecipe {
-  const ingredients = (schema.recipeIngredient as string[] ?? []).map(parseIngredientString);
+  const ingredients = (schema.recipeIngredient as string[] ?? [])
+    .map(normaliseIngredientString)
+    .map(parseIngredientString)
+    .map(cleanIngredient);
   const steps = flattenHowToSteps(schema.recipeInstructions);
 
   const yieldRaw = schema.recipeYield;
@@ -138,7 +163,7 @@ function mapJsonLdToRecipe(schema: Record<string, unknown>): ExtractedRecipe {
 
   return {
     title: typeof schema.name === 'string' ? schema.name : 'Untitled Recipe',
-    description: typeof schema.description === 'string' ? schema.description : null,
+    description: cleanDescription(typeof schema.description === 'string' ? schema.description : null),
     baseServings,
     steps,
     ingredients,
