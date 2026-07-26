@@ -85,17 +85,31 @@ function cleanNote(s: string | null): string | null {
   return cleaned || null;
 }
 
-// Strips opening media/cross-page reference clauses from a description.
+// Strips opening media/cross-page reference sentences from a description.
 // "Recipe video above. Beef tacos…" → "Beef tacos…"
 function cleanDescription(s: string | null): string | null {
   if (!s) return null;
-  const cleaned = s
+  let text = s.trim();
+
+  // Remove known opening-clause patterns
+  text = text
     .replace(/^(recipe\s+)?(video|photos?|images?)\s+(above|below|here)[.!,]?\s*/i, '')
     .replace(/^watch\s+(the\s+)?(video|recipe)[.!,]?\s*/i, '')
-    .replace(/^see\s+(the\s+)?(video|photos?|images?|notes?)\s+(above|below|here)?[.!,]?\s*/i, '')
-    .replace(/^step[\s-]by[\s-]step\s+photos?\s+(above|below|here)[.!,]?\s*/i, '')
+    .replace(/^see\s+(the\s+)?(video|photos?|images?|notes?)\s*(above|below|here)?[.!,]?\s*/i, '')
+    .replace(/^step[\s-]by[\s-]step\s+photos?\s*(above|below|here)?[.!,]?\s*/i, '')
     .trim();
-  return cleaned || null;
+
+  // Fallback: if the first sentence (up to first . or !) is short and contains
+  // "video", "photo", or "image" as standalone words, strip it entirely.
+  const firstStop = text.search(/[.!]/);
+  if (firstStop !== -1 && firstStop < 80) {
+    const firstSentence = text.slice(0, firstStop + 1);
+    if (/\b(video|photo|image)\b/i.test(firstSentence)) {
+      text = text.slice(firstStop + 1).replace(/^\s+/, '');
+    }
+  }
+
+  return text || null;
 }
 
 // Cleans extracted ingredient names:
@@ -142,22 +156,40 @@ Return exactly this shape:
   ]
 }
 
-Rules:
-- Extract only the most prominent recipe if multiple appear.
-- Ingredients may be in a sidebar, column, or list with no "Ingredients:" label — find them all.
-- Steps may be numbered, bulleted, lettered, or plain prose paragraphs — extract all instructional text.
-- Measurable ingredients: quantity as a number, unit as a string (null if unitless e.g. "3 eggs"), note null.
-- Non-measurable ("a pinch", "to taste", "oil for frying"): quantity null, unit null, note describes it.
-- Ingredient name must be the clean ingredient only — no parenthetical qualifiers, preparation notes, or alternates. Put those in the note field instead. Example: "1 onion, finely chopped (white, yellow or brown)" → name: "onion", note: "finely chopped, white, yellow or brown".
-- Quantity ranges: when an ingredient quantity is expressed as a range (e.g. "10 to 12", "10-12", "8 – 10"), always use the lower number.
-- Metric vs imperial: when both are given for one ingredient (e.g. "500 g / 1 lb", "250 ml / 1 cup", "2 kg / 4 lb"), always extract the metric value only (g, kg, ml, L). Discard the imperial equivalent.
-- Note refs: "(Note 1)", "(Note 2)", "Note 1", cross-references to videos or photos must never appear in any field. Strip them entirely.
-- Ingredient notes must be plain descriptive text — no parentheses, no "Note N" markers, no references to videos, photos, or other page sections.
-- Description: if the text starts with a clause referencing on-page media (e.g. "Recipe video above.", "Watch the video below."), strip that clause. Start the description from the first sentence that actually describes the dish.
-- Steps: plain text strings, no numbering or bullet prefixes.
-- baseServings: integer — look for "Serves N", "Makes N", "Yield N". Default to 4 if absent.
-- If ingredients or steps cannot be found, return empty arrays [] — never refuse to return JSON.
-- Always return valid JSON matching the exact shape above.`;
+INGREDIENT RULES — follow every one exactly:
+
+1. Clean name only. The name field holds the ingredient only — no quantities, no units, no preparation notes, no alternate options, no parenthetical content. Move everything else to note.
+   BAD:  name: "crispy taco shells (\"stand and stuff\") OR soft tortillas of choice (Note 1)"
+   GOOD: name: "crispy taco shells",  note: "stand and stuff or soft tortillas of choice"
+
+2. Quantity ranges → use the lower number.
+   "10 to 12 taco shells" → quantity: 10
+   "8–10 leaves" → quantity: 8
+
+3. Metric only. When a source lists both metric and imperial, extract only the metric value. Discard the imperial.
+   "500 g / 1 lb beef" → quantity: 500, unit: "g"
+   "250 ml / 1 cup milk" → quantity: 250, unit: "ml"
+   "2 kg / 4 lb chicken" → quantity: 2, unit: "kg"
+
+4. Note field: plain text only. No parentheses, no "Note N" markers, no references to videos or page sections.
+   "500 g beef, ground / mince (Note 2)" → name: "beef", quantity: 500, unit: "g", note: "ground or mince"
+   "2 cloves garlic, minced (Note 3)" → name: "garlic", quantity: 2, unit: null, note: "minced"
+
+5. Non-measurable ingredients ("a pinch", "to taste", "oil for frying"): quantity null, unit null, note describes it.
+
+DESCRIPTION RULES:
+
+6. Never start the description with a reference to on-page media. If the source description begins with a sentence like "Recipe video above.", "Watch the video:", "See photos below:" — remove that sentence entirely. Start from the first sentence that describes the dish itself.
+   BAD:  "Recipe video above. Beef tacos – the old school way! A juicy filling..."
+   GOOD: "Beef tacos – the old school way! A juicy filling..."
+
+GENERAL RULES:
+
+7. Extract only the most prominent recipe if multiple appear.
+8. Steps: plain text strings, no numbering or bullet prefixes.
+9. baseServings: integer from "Serves N", "Makes N", "Yield N". Default 4 if absent.
+10. If ingredients or steps cannot be found, return empty arrays [].
+11. Always return valid JSON matching the exact shape above — no explanation, no markdown.`;
 
 export async function extractRecipeFromImages(
   images: Array<{ buffer: Buffer; mimetype: string }>
