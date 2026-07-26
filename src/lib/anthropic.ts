@@ -64,6 +64,40 @@ function stripPageRefs(s: string): string {
     .trim();
 }
 
+// Removes "Note N" / "(Note N)" cross-reference markers from ingredient text.
+function stripNoteRefs(s: string): string {
+  return s
+    .replace(/\s*\(\s*Notes?\s+[\d,\s]+\)/gi, '')   // "(Note 1)", "(Notes 1, 2)"
+    .replace(/\s*\(\s*[Ss]ee\s+[Nn]ote[^)]*\)/gi, '') // "(See note X)"
+    .replace(/\s*,?\s*\bNotes?\s+\d+(\s*,\s*\d+)*/gi, '') // ", Note 1", "Note 1, 2"
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Cleans a note field: strips Note refs, removes parentheses, strips stray punctuation.
+function cleanNote(s: string | null): string | null {
+  if (!s) return null;
+  const cleaned = stripNoteRefs(s)
+    .replace(/[()]/g, '')
+    .replace(/^["'\s/,–—]+|["'\s/,–—]+$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return cleaned || null;
+}
+
+// Strips opening media/cross-page reference clauses from a description.
+// "Recipe video above. Beef tacos…" → "Beef tacos…"
+function cleanDescription(s: string | null): string | null {
+  if (!s) return null;
+  const cleaned = s
+    .replace(/^(recipe\s+)?(video|photos?|images?)\s+(above|below|here)[.!,]?\s*/i, '')
+    .replace(/^watch\s+(the\s+)?(video|recipe)[.!,]?\s*/i, '')
+    .replace(/^see\s+(the\s+)?(video|photos?|images?|notes?)\s+(above|below|here)?[.!,]?\s*/i, '')
+    .replace(/^step[\s-]by[\s-]step\s+photos?\s+(above|below|here)[.!,]?\s*/i, '')
+    .trim();
+  return cleaned || null;
+}
+
 // Cleans extracted ingredient names:
 //   "onion (, finely chopped (white, yellow or brown))" → name: "onion", note: "finely chopped, white, yellow or brown"
 // Strips leading junk chars from names, pulls parenthetical content into note.
@@ -88,6 +122,9 @@ export function cleanIngredient(raw: ExtractedIngredient): ExtractedIngredient {
   // Strip any remaining leading/trailing junk characters from the name
   name = name.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9\s]+$/g, '').trim();
 
+  // Clean the note: strip Note refs, parens, stray punctuation
+  note = cleanNote(note);
+
   return { ...raw, name, note };
 }
 
@@ -96,7 +133,7 @@ const SYSTEM_PROMPT = `You extract recipes and return structured JSON only — n
 Return exactly this shape:
 {
   "title": "Recipe name",
-  "description": "One-sentence description or null",
+  "description": "Brief description of the dish or null",
   "baseServings": 4,
   "steps": ["Step text", "Step text"],
   "ingredients": [
@@ -111,7 +148,12 @@ Rules:
 - Steps may be numbered, bulleted, lettered, or plain prose paragraphs — extract all instructional text.
 - Measurable ingredients: quantity as a number, unit as a string (null if unitless e.g. "3 eggs"), note null.
 - Non-measurable ("a pinch", "to taste", "oil for frying"): quantity null, unit null, note describes it.
-- Ingredient name must be the clean ingredient only — no parenthetical qualifiers or preparation notes. Put those in the note field instead. Example: "1 onion, finely chopped (white, yellow or brown)" → name: "onion", note: "finely chopped, white, yellow or brown".
+- Ingredient name must be the clean ingredient only — no parenthetical qualifiers, preparation notes, or alternates. Put those in the note field instead. Example: "1 onion, finely chopped (white, yellow or brown)" → name: "onion", note: "finely chopped, white, yellow or brown".
+- Quantity ranges: when an ingredient quantity is expressed as a range (e.g. "10 to 12", "10-12", "8 – 10"), always use the lower number.
+- Metric vs imperial: when both are given for one ingredient (e.g. "500 g / 1 lb", "250 ml / 1 cup", "2 kg / 4 lb"), always extract the metric value only (g, kg, ml, L). Discard the imperial equivalent.
+- Note refs: "(Note 1)", "(Note 2)", "Note 1", cross-references to videos or photos must never appear in any field. Strip them entirely.
+- Ingredient notes must be plain descriptive text — no parentheses, no "Note N" markers, no references to videos, photos, or other page sections.
+- Description: if the text starts with a clause referencing on-page media (e.g. "Recipe video above.", "Watch the video below."), strip that clause. Start the description from the first sentence that actually describes the dish.
 - Steps: plain text strings, no numbering or bullet prefixes.
 - baseServings: integer — look for "Serves N", "Makes N", "Yield N". Default to 4 if absent.
 - If ingredients or steps cannot be found, return empty arrays [] — never refuse to return JSON.
@@ -146,6 +188,7 @@ export async function extractRecipeFromImages(
 
   const result = parseModelResponse(message);
   result.ingredients = result.ingredients.map(cleanIngredient);
+  result.description = cleanDescription(result.description);
   return result;
 }
 
@@ -164,6 +207,7 @@ export async function extractRecipeFromText(text: string): Promise<ExtractedReci
 
   const result = parseModelResponse(message);
   result.ingredients = result.ingredients.map(cleanIngredient);
+  result.description = cleanDescription(result.description);
   return result;
 }
 
