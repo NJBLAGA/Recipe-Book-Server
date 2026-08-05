@@ -21,6 +21,7 @@ import {
   cleanIngredient,
   cleanDescription,
   cleanStepText,
+  decodeHtmlEntities,
   ExtractedIngredient,
   ExtractedRecipe,
 } from '../lib/anthropic';
@@ -70,7 +71,7 @@ const FRACTION_MAP: Record<string, number> = {
 //   "10 to 12 shells"    → "10 shells"     (lower of range)
 //   "8–10 leaves"        → "8 leaves"      (lower of range)
 function normaliseIngredientString(raw: string): string {
-  let s = raw;
+  let s = decodeHtmlEntities(raw);
 
   // Metric / imperial dual notation — keep metric, drop imperial
   s = s.replace(
@@ -163,7 +164,7 @@ function mapJsonLdToRecipe(schema: Record<string, unknown>): ExtractedRecipe {
   }
 
   return {
-    title: typeof schema.name === 'string' ? schema.name : 'Untitled Recipe',
+    title: decodeHtmlEntities(typeof schema.name === 'string' ? schema.name : 'Untitled Recipe'),
     description: cleanDescription(typeof schema.description === 'string' ? schema.description : null),
     baseServings,
     steps,

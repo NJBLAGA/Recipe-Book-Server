@@ -48,7 +48,7 @@ export interface ExtractedRecipe {
   ingredients: ExtractedIngredient[];
 }
 
-function decodeHtmlEntities(s: string): string {
+export function decodeHtmlEntities(s: string): string {
   return s
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -63,7 +63,7 @@ function decodeHtmlEntities(s: string): string {
 // "Preheat to 180C/350F" → "Preheat to 180°C"
 // "350F/180C" → "180°C"  (handles imperial-first ordering too)
 export function cleanStepText(s: string): string {
-  return s
+  return decodeHtmlEntities(s)
     // Celsius first: "180C / 350F" or "180°C/350°F"
     .replace(/(\d+)\s*°?\s*C\s*[/\\]\s*\d+\s*°?\s*F\b/gi, '$1°C')
     // Fahrenheit first: "350F / 180C"
@@ -116,7 +116,7 @@ function cleanNote(s: string | null): string | null {
 // "Recipe video above. Beef tacos…" → "Beef tacos…"
 export function cleanDescription(s: string | null): string | null {
   if (!s) return null;
-  let text = s.trim();
+  let text = decodeHtmlEntities(s).trim();
 
   // Remove known opening-clause patterns
   text = text
